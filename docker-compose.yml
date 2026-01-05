@@ -16,9 +16,16 @@ services:
       # Graph API Webhook URL（可选，需要公网 HTTPS 地址）
       # 格式: https://你的域名/api/graph/webhook
       - GRAPH_WEBHOOK_URL=${GRAPH_WEBHOOK_URL:-}
+    networks:
+      - default
+      - npm-net
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:80/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 20s 
+      start_period: 20s
+
+networks:
+  npm-net:
+    external: true 
