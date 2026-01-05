@@ -361,6 +361,8 @@ class GraphWebhookHandler:
         self.db = db
         self.webhook_manager = webhook_manager
         self.ws_handler = None  # WebSocket handler，用于广播新邮件
+        self._processing_emails = set()  # 正在处理的邮箱ID，用于防抖
+        self._processing_lock = threading.Lock()
     
     def set_ws_handler(self, ws_handler):
         """设置 WebSocket handler"""
@@ -433,7 +435,18 @@ class GraphWebhookHandler:
         
         # 只处理新邮件通知
         if change_type == 'created':
-            self._fetch_new_mail(email_info)
+            # 防抖：如果该邮箱正在处理中，跳过
+            with self._processing_lock:
+                if email_id in self._processing_emails:
+                    logger.debug(f"邮箱 {email_id} 正在处理中，跳过重复通知")
+                    return
+                self._processing_emails.add(email_id)
+            
+            try:
+                self._fetch_new_mail(email_info)
+            finally:
+                with self._processing_lock:
+                    self._processing_emails.discard(email_id)
     
     def _fetch_new_mail(self, email_info):
         """获取新邮件"""
@@ -480,9 +493,9 @@ class GraphWebhookHandler:
                         folder='INBOX',
                         has_attachments=1 if msg.get('has_attachments') else 0
                     )
-                    if success:
+                    if success and mail_id:
                         saved_count += 1
-                        # 记录新邮件信息
+                        # 只有真正新增的邮件才加入广播列表
                         new_mails.append({
                             'id': mail_id,
                             'email_id': email_id,
@@ -501,7 +514,7 @@ class GraphWebhookHandler:
             
             logger.info(f"邮箱 {email_info['email']} 通过 Webhook 获取到 {len(messages)} 封邮件，新增 {saved_count} 封")
             
-            # 广播新邮件到 WebSocket
+            # 只有真正有新邮件时才广播
             if saved_count > 0 and self.ws_handler and new_mails:
                 self._broadcast_new_mails(user_id, new_mails)
             

@@ -187,12 +187,14 @@ const connectWebSocket = () => {
 const handleNewMails = (newMails) => {
   if (!newMails || newMails.length === 0) return
   
+  let addedCount = 0
   // 将新邮件添加到列表顶部
   for (const mail of newMails) {
     // 检查是否已存在
     const exists = mailRecords.value.some(m => m.id === mail.id)
     if (!exists) {
       mailRecords.value.unshift(mail)
+      addedCount++
     }
   }
   
@@ -201,14 +203,20 @@ const handleNewMails = (newMails) => {
     mailRecords.value = mailRecords.value.slice(0, 50)
   }
   
-  // 显示通知
-  const firstMail = newMails[0]
-  ElNotification({
-    title: '收到新邮件',
-    message: `${firstMail.sender}: ${firstMail.subject}`,
-    type: 'success',
-    duration: 5000
-  })
+  // 显示通知（汇总显示）
+  if (addedCount > 0) {
+    const firstMail = newMails[0]
+    const message = addedCount === 1 
+      ? `${firstMail.sender}: ${firstMail.subject}`
+      : `收到 ${addedCount} 封新邮件`
+    
+    ElNotification({
+      title: '收到新邮件',
+      message: message,
+      type: 'success',
+      duration: 5000
+    })
+  }
 }
 
 const refreshMails = () => {
