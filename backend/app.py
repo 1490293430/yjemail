@@ -1449,6 +1449,10 @@ if __name__ == '__main__':
         # 将 webhook_manager 传递给 WebSocket handler
         if graph_webhook_manager:
             ws_handler.set_webhook_manager(graph_webhook_manager)
+        
+        # 将 ws_handler 传递给 webhook_handler 用于广播新邮件
+        if graph_webhook_handler:
+            graph_webhook_handler.set_ws_handler(ws_handler)
 
         # 注释掉 IMAP 轮询，改用 Graph API Webhook 或手动检查
         # email_processor.start_real_time_check(check_interval=60)

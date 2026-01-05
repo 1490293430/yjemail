@@ -360,6 +360,11 @@ class GraphWebhookHandler:
         """
         self.db = db
         self.webhook_manager = webhook_manager
+        self.ws_handler = None  # WebSocket handler，用于广播新邮件
+    
+    def set_ws_handler(self, ws_handler):
+        """设置 WebSocket handler"""
+        self.ws_handler = ws_handler
     
     def handle_validation(self, validation_token):
         """
@@ -434,6 +439,7 @@ class GraphWebhookHandler:
         """获取新邮件"""
         try:
             email_id = email_info['id']
+            user_id = email_info.get('user_id')
             refresh_token = email_info.get('refresh_token')
             client_id = email_info.get('client_id')
             
@@ -457,6 +463,8 @@ class GraphWebhookHandler:
             
             # 保存邮件
             saved_count = 0
+            new_mails = []  # 保存新邮件信息用于广播
+            
             for msg in messages:
                 try:
                     received_time = msg.get('received_time')
@@ -474,6 +482,17 @@ class GraphWebhookHandler:
                     )
                     if success:
                         saved_count += 1
+                        # 记录新邮件信息
+                        new_mails.append({
+                            'id': mail_id,
+                            'email_id': email_id,
+                            'recipient_email': email_info['email'],
+                            'subject': msg.get('subject', '(无主题)'),
+                            'sender': msg.get('sender', '(未知发件人)'),
+                            'received_time': received_time,
+                            'content': msg.get('content', ''),
+                            'has_attachments': 1 if msg.get('has_attachments') else 0
+                        })
                 except Exception as e:
                     logger.error(f"保存邮件失败: {str(e)}")
             
@@ -482,7 +501,31 @@ class GraphWebhookHandler:
             
             logger.info(f"邮箱 {email_info['email']} 通过 Webhook 获取到 {len(messages)} 封邮件，新增 {saved_count} 封")
             
+            # 广播新邮件到 WebSocket
+            if saved_count > 0 and self.ws_handler and new_mails:
+                self._broadcast_new_mails(user_id, new_mails)
+            
         except Exception as e:
             logger.error(f"获取新邮件异常: {str(e)}")
             import traceback
             traceback.print_exc()
+    
+    def _broadcast_new_mails(self, user_id, new_mails):
+        """广播新邮件到 WebSocket"""
+        try:
+            import asyncio
+            
+            # 构建广播消息
+            message = {
+                'type': 'new_mails',
+                'data': new_mails,
+                'count': len(new_mails)
+            }
+            
+            # 广播给指定用户
+            if user_id and hasattr(self.ws_handler, 'broadcast_to_user'):
+                asyncio.run(self.ws_handler.broadcast_to_user(user_id, message))
+                logger.info(f"已向用户 {user_id} 广播 {len(new_mails)} 封新邮件")
+            
+        except Exception as e:
+            logger.error(f"广播新邮件失败: {str(e)}")

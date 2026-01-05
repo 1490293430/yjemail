@@ -55,6 +55,7 @@
           v-loading="loading"
           :data="emails"
           @selection-change="handleSelectionChange"
+          @header-dragend="handleHeaderDragend"
           style="width: 100%"
           stripe
           border
@@ -66,8 +67,8 @@
             width="55"
             :selectable="row => row"
           />
-          <el-table-column prop="email" label="邮箱地址" width="220" />
-          <el-table-column prop="mail_type" label="邮箱类型" width="120">
+          <el-table-column prop="email" label="邮箱地址" :width="columnWidths.email" resizable />
+          <el-table-column prop="mail_type" label="邮箱类型" :width="columnWidths.mail_type" resizable>
             <template #default="scope">
               <el-tag
                 :type="getMailTypeColor(scope.row.mail_type || 'outlook')"
@@ -78,7 +79,7 @@
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="password" label="密码" width="150">
+          <el-table-column prop="password" label="密码" :width="columnWidths.password" resizable>
             <template #default="scope">
               <div class="password-field flex-between">
                 <span class="password-text">{{ scope.row.showPassword ? scope.row.password : '******' }}</span>
@@ -93,7 +94,7 @@
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="配置信息" width="200">
+          <el-table-column label="配置信息" :width="columnWidths.config" resizable>
             <template #default="scope">
               <template v-if="scope.row.mail_type === 'imap'">
                 <div class="server-info">
@@ -122,12 +123,12 @@
               </template>
             </template>
           </el-table-column>
-          <el-table-column prop="last_check_time" label="最后检查时间" width="180">
+          <el-table-column prop="last_check_time" label="最后检查时间" :width="columnWidths.last_check_time" resizable>
             <template #default="scope">
               <span>{{ formatDate(scope.row.last_check_time) }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="操作" fixed="right" width="360">
+          <el-table-column label="操作" fixed="right" :width="columnWidths.actions" resizable>
             <template #default="scope">
               <div class="action-buttons flex gap-sm">
                 <el-button
@@ -480,6 +481,57 @@ import EmailAttachments from '@/components/EmailAttachments.vue'
 import EmailQuoteFormatter from '@/components/EmailQuoteFormatter.vue'
 
 const emailsStore = useEmailsStore()
+
+// 列宽配置，从 localStorage 读取或使用默认值
+const COLUMN_WIDTHS_KEY = 'emails_table_column_widths'
+const defaultColumnWidths = {
+  email: 220,
+  mail_type: 120,
+  password: 150,
+  config: 200,
+  last_check_time: 180,
+  actions: 360
+}
+
+const loadColumnWidths = () => {
+  try {
+    const saved = localStorage.getItem(COLUMN_WIDTHS_KEY)
+    if (saved) {
+      return { ...defaultColumnWidths, ...JSON.parse(saved) }
+    }
+  } catch (e) {
+    console.error('加载列宽配置失败:', e)
+  }
+  return { ...defaultColumnWidths }
+}
+
+const columnWidths = reactive(loadColumnWidths())
+
+// 列宽拖动结束时保存
+const handleHeaderDragend = (newWidth, oldWidth, column) => {
+  // 根据列的 label 映射到 prop
+  const labelToProp = {
+    '邮箱地址': 'email',
+    '邮箱类型': 'mail_type',
+    '密码': 'password',
+    '配置信息': 'config',
+    '最后检查时间': 'last_check_time',
+    '操作': 'actions'
+  }
+  const prop = column.property || labelToProp[column.label]
+  if (prop && columnWidths[prop] !== undefined) {
+    columnWidths[prop] = newWidth
+    saveColumnWidths()
+  }
+}
+
+const saveColumnWidths = () => {
+  try {
+    localStorage.setItem(COLUMN_WIDTHS_KEY, JSON.stringify(columnWidths))
+  } catch (e) {
+    console.error('保存列宽配置失败:', e)
+  }
+}
 
 // 状态
 const loadingMails = ref(false)

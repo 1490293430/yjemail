@@ -8,6 +8,7 @@
     </div>
 
     <el-table
+      ref="mailTableRef"
       v-loading="loading"
       :data="mailRecords"
       style="width: 100%"
@@ -15,10 +16,11 @@
       border
       highlight-current-row
       @row-click="viewMailContent"
+      @header-dragend="handleHeaderDragend"
       class="mail-table"
     >
-      <el-table-column prop="recipient_email" label="收件邮箱" width="200" show-overflow-tooltip />
-      <el-table-column prop="subject" label="主题" width="250" show-overflow-tooltip>
+      <el-table-column prop="recipient_email" label="收件邮箱" :width="columnWidths.recipient_email" resizable show-overflow-tooltip />
+      <el-table-column prop="subject" label="主题" :width="columnWidths.subject" resizable show-overflow-tooltip>
         <template #default="scope">
           <div class="subject-cell">
             <span>{{ scope.row.subject || '(无主题)' }}</span>
@@ -28,13 +30,13 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="content" label="内容预览" min-width="400">
+      <el-table-column prop="content" label="内容预览" :min-width="columnWidths.content" resizable>
         <template #default="scope">
           <div class="content-preview">{{ getContentPreview(scope.row) }}</div>
         </template>
       </el-table-column>
-      <el-table-column prop="sender" label="发件人" width="180" show-overflow-tooltip />
-      <el-table-column prop="received_time" label="接收时间" width="160">
+      <el-table-column prop="sender" label="发件人" :width="columnWidths.sender" resizable show-overflow-tooltip />
+      <el-table-column prop="received_time" label="接收时间" :width="columnWidths.received_time" resizable>
         <template #default="scope">
           <span>{{ formatDate(scope.row.received_time) }}</span>
         </template>
@@ -69,8 +71,9 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
+import { ElNotification } from 'element-plus'
 import dayjs from 'dayjs'
 import DOMPurify from 'dompurify'
 
@@ -78,6 +81,49 @@ const loading = ref(false)
 const mailRecords = ref([])
 const mailContentDialogVisible = ref(false)
 const selectedMail = ref(null)
+const mailTableRef = ref(null)
+let ws = null
+
+// 列宽配置，从 localStorage 读取或使用默认值
+const COLUMN_WIDTHS_KEY = 'home_mail_table_column_widths'
+const defaultColumnWidths = {
+  recipient_email: 200,
+  subject: 250,
+  content: 400,
+  sender: 180,
+  received_time: 160
+}
+
+const loadColumnWidths = () => {
+  try {
+    const saved = localStorage.getItem(COLUMN_WIDTHS_KEY)
+    if (saved) {
+      return { ...defaultColumnWidths, ...JSON.parse(saved) }
+    }
+  } catch (e) {
+    console.error('加载列宽配置失败:', e)
+  }
+  return { ...defaultColumnWidths }
+}
+
+const columnWidths = reactive(loadColumnWidths())
+
+// 列宽拖动结束时保存
+const handleHeaderDragend = (newWidth, oldWidth, column) => {
+  const prop = column.property
+  if (prop && columnWidths[prop] !== undefined) {
+    columnWidths[prop] = newWidth
+    saveColumnWidths()
+  }
+}
+
+const saveColumnWidths = () => {
+  try {
+    localStorage.setItem(COLUMN_WIDTHS_KEY, JSON.stringify(columnWidths))
+  } catch (e) {
+    console.error('保存列宽配置失败:', e)
+  }
+}
 
 const fetchLatestMails = async () => {
   loading.value = true
@@ -95,6 +141,74 @@ const fetchLatestMails = async () => {
   } finally {
     loading.value = false
   }
+}
+
+const connectWebSocket = () => {
+  const token = localStorage.getItem('token')
+  if (!token) return
+  
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const wsUrl = `${protocol}//${window.location.host}/ws`
+  
+  ws = new WebSocket(wsUrl)
+  
+  ws.onopen = () => {
+    console.log('WebSocket 已连接')
+    // 发送认证消息
+    ws.send(JSON.stringify({
+      type: 'authenticate',
+      token: token
+    }))
+  }
+  
+  ws.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data)
+      
+      if (data.type === 'new_mails') {
+        // 收到新邮件，更新列表
+        handleNewMails(data.data)
+      }
+    } catch (error) {
+      console.error('解析 WebSocket 消息失败:', error)
+    }
+  }
+  
+  ws.onclose = () => {
+    console.log('WebSocket 已断开，5秒后重连...')
+    setTimeout(connectWebSocket, 5000)
+  }
+  
+  ws.onerror = (error) => {
+    console.error('WebSocket 错误:', error)
+  }
+}
+
+const handleNewMails = (newMails) => {
+  if (!newMails || newMails.length === 0) return
+  
+  // 将新邮件添加到列表顶部
+  for (const mail of newMails) {
+    // 检查是否已存在
+    const exists = mailRecords.value.some(m => m.id === mail.id)
+    if (!exists) {
+      mailRecords.value.unshift(mail)
+    }
+  }
+  
+  // 限制列表长度
+  if (mailRecords.value.length > 50) {
+    mailRecords.value = mailRecords.value.slice(0, 50)
+  }
+  
+  // 显示通知
+  const firstMail = newMails[0]
+  ElNotification({
+    title: '收到新邮件',
+    message: `${firstMail.sender}: ${firstMail.subject}`,
+    type: 'success',
+    duration: 5000
+  })
 }
 
 const refreshMails = () => {
@@ -155,6 +269,14 @@ const sanitizeHtml = (html) => {
 
 onMounted(() => {
   fetchLatestMails()
+  connectWebSocket()
+})
+
+onUnmounted(() => {
+  if (ws) {
+    ws.close()
+    ws = null
+  }
 })
 </script>
 
