@@ -14,6 +14,7 @@ class WebSocketHandler:
     def __init__(self):
         self.db = None
         self.email_processor = None
+        self.webhook_manager = None  # Graph API Webhook 管理器
         self.port = 8765
         self.clients = {}  # 连接的客户端 {websocket: user_id}
         self.user_sockets = {}  # 用户的连接 {user_id: set(websockets)}
@@ -39,6 +40,10 @@ class WebSocketHandler:
             'delete_emails': self.handle_delete_emails_message,
             'import_emails': self.handle_import_emails_message,
         }
+    
+    def set_webhook_manager(self, webhook_manager):
+        """设置 Webhook 管理器"""
+        self.webhook_manager = webhook_manager
     
     async def register_client(self, websocket, path):
         """注册新客户端连接"""
@@ -555,6 +560,7 @@ class WebSocketHandler:
             lines = import_data.strip().split('\n')
             imported_count = 0
             errors = []
+            new_outlook_email_ids = []  # 记录新添加的 Outlook 邮箱 ID
             
             for line in lines:
                 try:
@@ -573,6 +579,9 @@ class WebSocketHandler:
                     email_id = self.db.add_email(user_id, email, password, client_id, refresh_token)
                     if email_id:
                         imported_count += 1
+                        # 如果有 client_id 和 refresh_token，说明是 Outlook 邮箱
+                        if client_id and refresh_token:
+                            new_outlook_email_ids.append(email_id)
                     else:
                         errors.append(f"添加失败: {email}")
                 except Exception as e:
@@ -589,6 +598,10 @@ class WebSocketHandler:
                 await websocket.send(json.dumps({
                     'type': 'emails_imported'
                 }))
+                
+                # 为新添加的 Outlook 邮箱创建 Webhook 订阅
+                if new_outlook_email_ids and self.webhook_manager:
+                    self._create_subscriptions_for_new_emails(new_outlook_email_ids)
             else:
                 await websocket.send(json.dumps({
                     'type': 'warning',
@@ -613,6 +626,38 @@ class WebSocketHandler:
                 'type': 'error',
                 'message': f'导入邮箱失败: {str(e)}'
             }))
+    
+    def _create_subscriptions_for_new_emails(self, email_ids):
+        """为新添加的邮箱创建 Webhook 订阅（在后台线程中执行）"""
+        import threading
+        import time
+        
+        def task():
+            created = 0
+            failed = 0
+            
+            for email_id in email_ids:
+                try:
+                    email_info = self.db.get_email_by_id(email_id)
+                    if email_info and email_info.get('mail_type') == 'outlook':
+                        result = self.webhook_manager.create_subscription(email_info)
+                        if result:
+                            created += 1
+                            logger.info(f"为新邮箱 {email_info['email']} 创建订阅成功")
+                        else:
+                            failed += 1
+                            logger.warning(f"为新邮箱 {email_info['email']} 创建订阅失败")
+                        # 每个请求之间等待 2 秒，避免触发限流
+                        time.sleep(2)
+                except Exception as e:
+                    failed += 1
+                    logger.error(f"为邮箱 ID {email_id} 创建订阅时出错: {str(e)}")
+            
+            logger.info(f"新邮箱订阅创建完成: 成功 {created}, 失败 {failed}")
+        
+        # 在后台线程中执行
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
     
     async def handle_message(self, websocket, message_text):
         """处理WebSocket消息"""
