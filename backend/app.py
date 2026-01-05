@@ -1399,8 +1399,18 @@ def set_graph_config(current_user):
 @token_required
 def get_graph_api_status(current_user):
     """获取 Graph API 开关状态（所有用户可访问）"""
+    # 获取 Outlook 邮箱数量
+    outlook_emails = db.get_all_outlook_emails()
+    outlook_count = len(outlook_emails) if outlook_emails else 0
+    
+    # 获取订阅数量
+    subscriptions = db.get_all_subscriptions()
+    subscription_count = len(subscriptions) if subscriptions else 0
+    
     return jsonify({
-        'use_graph_api': db.is_graph_api_enabled()
+        'use_graph_api': db.is_graph_api_enabled(),
+        'outlook_email_count': outlook_count,
+        'subscription_count': subscription_count
     })
 
 def parse_args():
@@ -1435,6 +1445,10 @@ if __name__ == '__main__':
 
         # 初始化 Graph API Webhook（如果配置了）
         init_graph_webhook()
+        
+        # 将 webhook_manager 传递给 WebSocket handler
+        if graph_webhook_manager:
+            ws_handler.set_webhook_manager(graph_webhook_manager)
 
         # 注释掉 IMAP 轮询，改用 Graph API Webhook 或手动检查
         # email_processor.start_real_time_check(check_interval=60)

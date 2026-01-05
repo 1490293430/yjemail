@@ -8,7 +8,10 @@
               <h2 class="page-title">邮箱列表</h2>
               <el-tooltip content="开启后，所有 Outlook 邮箱将使用 Graph API 方式收信" placement="top">
                 <div class="graph-api-switch flex gap-sm" style="align-items: center; margin-left: 16px;">
-                  <span style="font-size: 14px; color: #606266;">Graph API</span>
+                  <span style="font-size: 13px; color: #909399;">
+                    邮箱: {{ outlookEmailCount }} | 订阅: {{ subscriptionCount }}
+                  </span>
+                  <span style="font-size: 14px; color: #606266; margin-left: 8px;">Graph API</span>
                   <el-switch
                     v-model="globalUseGraphApi"
                     @change="handleGlobalGraphApiChange"
@@ -489,6 +492,8 @@ const importing = ref(false)
 
 // 全局 Graph API 开关状态
 const globalUseGraphApi = ref(false)
+const outlookEmailCount = ref(0)
+const subscriptionCount = ref(0)
 
 // 从服务器加载 Graph API 配置
 const loadGraphApiConfig = async () => {
@@ -501,6 +506,8 @@ const loadGraphApiConfig = async () => {
     if (response.ok) {
       const data = await response.json()
       globalUseGraphApi.value = data.use_graph_api
+      outlookEmailCount.value = data.outlook_email_count || 0
+      subscriptionCount.value = data.subscription_count || 0
     }
   } catch (error) {
     console.error('加载 Graph API 配置失败:', error)
