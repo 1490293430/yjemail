@@ -317,12 +317,14 @@ onUnmounted(() => {
 .content-preview {
   color: #666;
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.4;
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+  word-break: break-all;
+  max-height: 2.8em; /* 1.4 * 2 行 */
 }
 
 .empty-state {
