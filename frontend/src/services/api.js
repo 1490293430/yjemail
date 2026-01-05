@@ -287,7 +287,14 @@ const apiMethods = {
         return api.post('/emails/batch_delete', { email_ids: emailIds });
       }
     },
-    import: (data) => api.post('/emails/import', data)
+    import: (data) => api.post('/emails/import', data),
+    update: (emailId, data) => api.put(`/emails/${emailId}`, data)
+  },
+
+  // Graph API 配置
+  graphApi: {
+    getConfig: () => api.get('/config/graph_api').then(res => res.data),
+    setConfig: (enabled) => api.post('/graph/config', { use_graph_api: enabled }).then(res => res.data)
   },
 
   // 工具方法

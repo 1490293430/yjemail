@@ -5,7 +5,7 @@
         <el-header class="app-header" :class="{ 'scrolled': isScrolled }">
           <div class="header-left">
             <router-link to="/" class="logo-link">
-              <h1>花火邮箱助手</h1>
+              <h1>Outlook邮箱助手</h1>
             </router-link>
           </div>
 
@@ -65,9 +65,6 @@
           <el-menu-item index="/admin/users" v-if="isAdmin">
             <el-icon><UserFilled /></el-icon>用户管理
           </el-menu-item>
-          <el-menu-item index="/about">
-            <el-icon><InfoFilled /></el-icon>关于
-          </el-menu-item>
         </el-menu>
 
         <el-main>
@@ -82,7 +79,6 @@
         </el-main>
 
         <el-footer class="app-footer">
-          花火邮箱助手 &copy; 2025
         </el-footer>
       </el-container>
 

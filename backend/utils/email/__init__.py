@@ -13,6 +13,7 @@ from .common import (
 )
 from .outlook import OutlookMailHandler
 from .imap import IMAPMailHandler
+from .graph_api import GraphAPIMailHandler
 from .mail_processor import MailProcessor, EmailBatchProcessor
 from .file_parser import EmailFileParser
 
@@ -26,6 +27,7 @@ __all__ = [
     'decode_email_content',
     'OutlookMailHandler',
     'IMAPMailHandler',
+    'GraphAPIMailHandler',
     'MailProcessor',
     'EmailBatchProcessor',
     'EmailFileParser',

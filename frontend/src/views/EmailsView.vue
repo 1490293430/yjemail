@@ -4,7 +4,18 @@
       <el-card class="email-list-card shadow">
         <template #header>
           <div class="card-header flex-between">
-            <h2 class="page-title">邮箱列表</h2>
+            <div class="title-area flex gap-md" style="align-items: center;">
+              <h2 class="page-title">邮箱列表</h2>
+              <el-tooltip content="开启后，所有 Outlook 邮箱将使用 Graph API 方式收信" placement="top">
+                <div class="graph-api-switch flex gap-sm" style="align-items: center; margin-left: 16px;">
+                  <span style="font-size: 14px; color: #606266;">Graph API</span>
+                  <el-switch
+                    v-model="globalUseGraphApi"
+                    @change="handleGlobalGraphApiChange"
+                  />
+                </div>
+              </el-tooltip>
+            </div>
             <div class="actions flex gap-md">
               <el-button type="primary" @click="refreshEmails" :icon="Refresh" class="hover-scale">
                 刷新列表
@@ -476,6 +487,26 @@ const mailListDialogVisible = ref(false)
 const addingEmail = ref(false)
 const importing = ref(false)
 
+// 全局 Graph API 开关状态
+const globalUseGraphApi = ref(false)
+
+// 从服务器加载 Graph API 配置
+const loadGraphApiConfig = async () => {
+  try {
+    const response = await fetch('/api/config/graph_api', {
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('token')}`
+      }
+    })
+    if (response.ok) {
+      const data = await response.json()
+      globalUseGraphApi.value = data.use_graph_api
+    }
+  } catch (error) {
+    console.error('加载 Graph API 配置失败:', error)
+  }
+}
+
 // 添加邮箱表单引用
 const addEmailFormRef = ref(null)
 const batchImportFormRef = ref(null)
@@ -697,6 +728,7 @@ const handleBatchDelete = () => {
 
 const handleCheck = async (row) => {
   try {
+    // 服务器会自动读取全局 Graph API 设置
     const result = await emailsStore.checkEmail(row.id)
 
     // 检查结果，确定是否显示正在处理中的消息
@@ -728,6 +760,7 @@ const handleBatchCheck = async () => {
   }
 
   try {
+    // 服务器会自动读取全局 Graph API 设置
     await emailsStore.checkEmails(emailIds)
     ElMessage.info(`正在检查 ${count} 个邮箱的邮件，请稍候...`)
   } catch (error) {
@@ -913,6 +946,33 @@ const togglePasswordVisibility = async (row) => {
 
   // 显示密码
   row.showPassword = true;
+}
+
+// 全局 Graph API 开关变更处理
+const handleGlobalGraphApiChange = async (value) => {
+  try {
+    const response = await fetch('/api/graph/config', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('token')}`
+      },
+      body: JSON.stringify({ use_graph_api: value })
+    })
+    
+    if (response.ok) {
+      const mode = value ? 'Graph API' : 'IMAP';
+      ElMessage.success(`已全局切换为 ${mode} 模式，所有 Outlook 邮箱将使用此模式`);
+    } else {
+      // 恢复原值
+      globalUseGraphApi.value = !value
+      ElMessage.error('设置失败，请重试')
+    }
+  } catch (error) {
+    console.error('设置 Graph API 配置失败:', error)
+    globalUseGraphApi.value = !value
+    ElMessage.error('设置失败: ' + (error.message || '网络错误'))
+  }
 }
 
 // 检查邮件内容是否为HTML格式
@@ -1206,6 +1266,7 @@ const submitEditForm = async () => {
 onMounted(() => {
   emailsStore.initWebSocketListeners()
   refreshEmails()
+  loadGraphApiConfig()  // 加载 Graph API 配置
 })
 </script>
 

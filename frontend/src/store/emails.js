@@ -247,7 +247,7 @@ export const useEmailsStore = defineStore('emails', {
     // 检查单个邮箱
     async checkEmail(emailId) {
       try {
-        // 使用api对象调用，确保使用正确的基础URL
+        // 服务器会自动读取全局 Graph API 设置
         console.log(`检查邮箱 ID:${emailId}`);
         const response = await api.emails.check([emailId]);
 
@@ -281,6 +281,7 @@ export const useEmailsStore = defineStore('emails', {
       this.error = null;
 
       try {
+        // 服务器会自动读取全局 Graph API 设置
         if (!websocket.isConnected) {
           await api.emails.check(emailIds);
         } else {
@@ -387,7 +388,7 @@ export const useEmailsStore = defineStore('emails', {
 
         // 使用api对象调用，确保使用正确的基础URL
         console.log(`更新邮箱 ID:${emailData.id}`);
-        const response = await api.put(`/emails/${emailData.id}`, emailData);
+        const response = await api.emails.update(emailData.id, emailData);
 
         // 更新本地邮箱数据
         const index = this.emails.findIndex(e => e.id === emailData.id);

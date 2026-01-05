@@ -461,6 +461,22 @@ def add_email(current_user):
         return jsonify({'error': f'不支持的邮箱类型: {mail_type}'}), 400
 
     if success:
+        # 如果是 Outlook 邮箱且 Webhook 已配置，自动创建订阅
+        if mail_type == 'outlook' and graph_webhook_manager:
+            try:
+                email_info = db.get_email_by_id(success)  # success 是新邮箱的 ID
+                if email_info:
+                    # 在后台线程中创建订阅，不阻塞响应
+                    import threading
+                    threading.Thread(
+                        target=graph_webhook_manager.create_subscription,
+                        args=(email_info,),
+                        daemon=True
+                    ).start()
+                    logger.info(f"已为新邮箱 {email} 启动订阅创建任务")
+            except Exception as e:
+                logger.warning(f"为新邮箱创建订阅失败: {str(e)}")
+        
         return jsonify({'message': f'邮箱 {email} 添加成功'})
     else:
         return jsonify({'error': f'邮箱 {email} 已存在或添加失败'}), 409
@@ -524,6 +540,15 @@ def check_email(current_user, email_id):
                 'status': 'processing'
             }), 409
 
+        # 从数据库获取全局 Graph API 设置
+        use_graph_api = db.is_graph_api_enabled()
+        
+        # 如果启用了 Graph API 且是 Outlook 邮箱，设置标志
+        if use_graph_api and email_info.get('mail_type') == 'outlook':
+            email_info = dict(email_info)  # 转换为可修改的字典
+            email_info['use_graph_api'] = 1
+            logger.info(f"邮箱 ID {email_id} 使用 Graph API 模式")
+
         # 创建进度回调
         def progress_callback(progress, message):
             logger.info(f"邮箱 ID {email_id} 处理进度: {progress}%, 消息: {message}")
@@ -569,7 +594,10 @@ def check_email(current_user, email_id):
 def batch_check_emails(current_user):
     """批量检查邮箱邮件"""
     data = request.json
-    email_ids = data.get('email_ids', [])
+    email_ids = data.get('email_ids', []) if data else []
+    
+    # 从数据库获取全局 Graph API 设置
+    use_graph_api = db.is_graph_api_enabled()
 
     if not email_ids:
         # 如果没有提供 ID，则获取当前用户拥有的所有邮箱
@@ -613,14 +641,14 @@ def batch_check_emails(current_user):
 
     # 记录有效的邮箱ID
     valid_emails = [db.get_email_by_id(email_id)['email'] for email_id in valid_ids if db.get_email_by_id(email_id)]
-    logger.info(f"批量检查开始处理 {len(valid_ids)} 个邮箱: {valid_emails} (用户ID: {current_user['id']})")
+    logger.info(f"批量检查开始处理 {len(valid_ids)} 个邮箱: {valid_emails} (用户ID: {current_user['id']}, Graph API: {use_graph_api})")
 
     # 自定义进度回调
     def progress_callback(email_id, progress, message):
         logger.info(f"邮箱 ID {email_id} 处理进度: {progress}%, 消息: {message}")
 
-    # 启动邮件检查线程
-    email_processor.check_emails(valid_ids, progress_callback)
+    # 启动邮件检查线程，传递 use_graph_api 参数
+    email_processor.check_emails(valid_ids, progress_callback, use_graph_api=use_graph_api)
 
     return jsonify({
         'message': f'开始检查 {len(valid_ids)} 个邮箱',
@@ -639,6 +667,17 @@ def get_mail_records(current_user, email_id):
 
     mail_records = db.get_mail_records(email_id)
     return jsonify([dict(record) for record in mail_records])
+
+@app.route('/api/mail_records/latest', methods=['GET'])
+@token_required
+def get_latest_mail_records(current_user):
+    """获取当前用户所有邮箱的最新邮件（10分钟内，否则最新20条）"""
+    try:
+        records = db.get_latest_mail_records(current_user['id'], limit=20, minutes=10)
+        return jsonify(records)
+    except Exception as e:
+        logger.error(f"获取最新邮件失败: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/mail_records/<int:mail_id>/attachments', methods=['GET'])
 @token_required
@@ -981,6 +1020,9 @@ def update_email(current_user, email_id):
                 update_data['client_id'] = data.get('client_id')
             if data.get('refresh_token'):
                 update_data['refresh_token'] = data.get('refresh_token')
+            # 支持更新 use_graph_api 字段
+            if 'use_graph_api' in data:
+                update_data['use_graph_api'] = 1 if data.get('use_graph_api') else 0
         elif current_email['mail_type'] in ['imap', 'gmail', 'qq']:
             if data.get('server'):
                 update_data['server'] = data.get('server')
@@ -1125,6 +1167,242 @@ def toggle_email_realtime_check(current_user, email_id):
             'message': f'切换邮箱实时检查状态失败: {str(e)}'
         }), 500
 
+# ==================== Graph API Webhook 相关端点 ====================
+
+# 全局 Webhook 管理器实例
+graph_webhook_manager = None
+graph_webhook_handler = None
+
+def init_graph_webhook():
+    """初始化 Graph API Webhook 管理器"""
+    global graph_webhook_manager, graph_webhook_handler
+    
+    # 从环境变量获取 webhook URL
+    webhook_url = os.environ.get('GRAPH_WEBHOOK_URL')
+    if not webhook_url:
+        logger.warning("未配置 GRAPH_WEBHOOK_URL 环境变量，Graph API Webhook 功能未启用")
+        return False
+    
+    try:
+        from utils.email.graph_webhook import GraphWebhookManager, GraphWebhookHandler
+        
+        graph_webhook_manager = GraphWebhookManager(db, webhook_url)
+        graph_webhook_handler = GraphWebhookHandler(db, graph_webhook_manager)
+        
+        # 启动订阅续订循环
+        graph_webhook_manager.start_renew_loop(check_interval=3600)
+        
+        # 自动为所有 Outlook 邮箱创建订阅（后台执行）
+        graph_webhook_manager.create_subscriptions_async()
+        
+        logger.info(f"Graph API Webhook 已初始化，webhook URL: {webhook_url}")
+        logger.info("已启动后台任务为所有 Outlook 邮箱创建订阅")
+        return True
+    except Exception as e:
+        logger.error(f"初始化 Graph API Webhook 失败: {str(e)}")
+        return False
+
+@app.route('/api/graph/webhook', methods=['POST'])
+def graph_webhook_endpoint():
+    """
+    Graph API Webhook 接收端点
+    
+    微软会向此端点发送：
+    1. 订阅验证请求（带 validationToken 参数）
+    2. 邮件变更通知（POST JSON 数据）
+    """
+    # 处理订阅验证请求
+    validation_token = request.args.get('validationToken')
+    if validation_token:
+        logger.info("收到 Graph API 订阅验证请求")
+        # 必须返回纯文本格式的 validationToken
+        response = make_response(validation_token)
+        response.headers['Content-Type'] = 'text/plain'
+        return response
+    
+    # 处理邮件变更通知
+    if graph_webhook_handler:
+        try:
+            notification_data = request.json
+            logger.info(f"收到 Graph API 通知: {notification_data}")
+            
+            # 异步处理通知，立即返回 202 Accepted
+            threading.Thread(
+                target=graph_webhook_handler.handle_notification,
+                args=(notification_data,),
+                daemon=True
+            ).start()
+            
+            return '', 202
+        except Exception as e:
+            logger.error(f"处理 Graph API 通知失败: {str(e)}")
+            return '', 202  # 即使失败也返回 202，避免微软重试
+    else:
+        logger.warning("Graph API Webhook 未初始化")
+        return '', 202
+
+@app.route('/api/graph/subscriptions', methods=['GET'])
+@token_required
+@admin_required
+def get_graph_subscriptions(current_user):
+    """获取所有 Graph API 订阅（仅管理员）"""
+    try:
+        subscriptions = db.get_all_subscriptions()
+        return jsonify(subscriptions)
+    except Exception as e:
+        logger.error(f"获取订阅列表失败: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/graph/subscriptions/create_all', methods=['POST'])
+@token_required
+@admin_required
+def create_all_graph_subscriptions(current_user):
+    """为所有 Outlook 邮箱创建订阅（仅管理员）"""
+    if not graph_webhook_manager:
+        return jsonify({'error': 'Graph API Webhook 未配置，请设置 GRAPH_WEBHOOK_URL 环境变量'}), 400
+    
+    try:
+        data = request.json or {}
+        async_mode = data.get('async', True)  # 默认异步执行
+        
+        if async_mode:
+            # 异步执行，立即返回
+            graph_webhook_manager.create_subscriptions_async()
+            
+            # 获取当前统计
+            outlook_count = len(db.get_all_outlook_emails())
+            existing_count = len(db.get_all_subscriptions())
+            
+            return jsonify({
+                'success': True,
+                'message': f'已开始后台创建订阅任务，共 {outlook_count} 个 Outlook 邮箱，已有 {existing_count} 个订阅',
+                'note': '由于 API 限流，批量创建需要较长时间（约每分钟 50 个）'
+            })
+        else:
+            # 同步执行（不推荐用于大量邮箱）
+            result = graph_webhook_manager.create_subscriptions_for_all_outlook_emails()
+            if result:
+                return jsonify({
+                    'success': True,
+                    'message': f"创建订阅完成：成功 {result['created']}，失败 {result['failed']}，跳过 {result['skipped']}",
+                    'data': result
+                })
+            else:
+                return jsonify({'error': '创建订阅失败'}), 500
+    except Exception as e:
+        logger.error(f"批量创建订阅失败: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/graph/subscriptions/<int:email_id>', methods=['POST'])
+@token_required
+def create_graph_subscription(current_user, email_id):
+    """为指定邮箱创建 Graph API 订阅"""
+    if not graph_webhook_manager:
+        return jsonify({'error': 'Graph API Webhook 未配置'}), 400
+    
+    try:
+        # 验证邮箱权限
+        email_info = db.get_email_by_id(email_id, None if current_user['is_admin'] else current_user['id'])
+        if not email_info:
+            return jsonify({'error': '邮箱不存在或您没有权限'}), 404
+        
+        if email_info.get('mail_type') != 'outlook':
+            return jsonify({'error': '只有 Outlook 邮箱支持 Graph API 订阅'}), 400
+        
+        result = graph_webhook_manager.create_subscription(email_info)
+        if result:
+            return jsonify({
+                'success': True,
+                'message': '订阅创建成功',
+                'data': {
+                    'subscription_id': result['subscription_id'],
+                    'expiration_time': str(result['expiration_time'])
+                }
+            })
+        else:
+            return jsonify({'error': '创建订阅失败'}), 500
+    except Exception as e:
+        logger.error(f"创建订阅失败: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/graph/subscriptions/<int:email_id>', methods=['DELETE'])
+@token_required
+def delete_graph_subscription(current_user, email_id):
+    """删除指定邮箱的 Graph API 订阅"""
+    if not graph_webhook_manager:
+        return jsonify({'error': 'Graph API Webhook 未配置'}), 400
+    
+    try:
+        # 验证邮箱权限
+        email_info = db.get_email_by_id(email_id, None if current_user['is_admin'] else current_user['id'])
+        if not email_info:
+            return jsonify({'error': '邮箱不存在或您没有权限'}), 404
+        
+        # 获取订阅信息
+        subscription = db.get_subscription_by_email_id(email_id)
+        if not subscription:
+            return jsonify({'error': '该邮箱没有订阅'}), 404
+        
+        # 删除订阅
+        success = graph_webhook_manager.delete_subscription(
+            subscription['subscription_id'],
+            email_info.get('refresh_token'),
+            email_info.get('client_id')
+        )
+        
+        if success:
+            return jsonify({'success': True, 'message': '订阅已删除'})
+        else:
+            # 即使微软端删除失败，也删除本地记录
+            db.delete_subscription_by_email_id(email_id)
+            return jsonify({'success': True, 'message': '订阅记录已删除（微软端可能已过期）'})
+    except Exception as e:
+        logger.error(f"删除订阅失败: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/graph/config', methods=['GET'])
+@token_required
+@admin_required
+def get_graph_config(current_user):
+    """获取 Graph API 配置状态（仅管理员）"""
+    webhook_url = os.environ.get('GRAPH_WEBHOOK_URL', '')
+    return jsonify({
+        'webhook_enabled': graph_webhook_manager is not None,
+        'webhook_url': webhook_url,
+        'subscription_count': len(db.get_all_subscriptions()) if graph_webhook_manager else 0,
+        'use_graph_api': db.is_graph_api_enabled()
+    })
+
+@app.route('/api/graph/config', methods=['POST'])
+@token_required
+@admin_required
+def set_graph_config(current_user):
+    """设置 Graph API 配置（仅管理员）"""
+    data = request.json or {}
+    
+    if 'use_graph_api' in data:
+        enabled = data.get('use_graph_api', True)
+        success = db.set_graph_api_enabled(enabled)
+        if success:
+            logger.info(f"管理员 {current_user['username']} {'启用' if enabled else '禁用'}了 Graph API")
+            return jsonify({
+                'success': True,
+                'message': f"已{'启用' if enabled else '禁用'} Graph API",
+                'use_graph_api': enabled
+            })
+        else:
+            return jsonify({'error': '设置失败'}), 500
+    
+    return jsonify({'error': '无效的请求参数'}), 400
+
+@app.route('/api/config/graph_api', methods=['GET'])
+@token_required
+def get_graph_api_status(current_user):
+    """获取 Graph API 开关状态（所有用户可访问）"""
+    return jsonify({
+        'use_graph_api': db.is_graph_api_enabled()
+    })
+
 def parse_args():
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description='花火邮箱助手')
@@ -1155,9 +1433,13 @@ if __name__ == '__main__':
         ws_thread.daemon = True
         ws_thread.start()
 
-        # 启动实时邮件检查
-        email_processor.start_real_time_check(check_interval=60)
-        logger.info("实时邮件检查已启动")
+        # 初始化 Graph API Webhook（如果配置了）
+        init_graph_webhook()
+
+        # 注释掉 IMAP 轮询，改用 Graph API Webhook 或手动检查
+        # email_processor.start_real_time_check(check_interval=60)
+        # logger.info("实时邮件检查已启动")
+        logger.info("IMAP 轮询已禁用，请使用 Graph API Webhook 或手动检查")
 
         # 启动Flask应用
         logger.info(f"花火邮箱助手启动于 http://{args.host}:{args.port}")
@@ -1168,6 +1450,8 @@ if __name__ == '__main__':
         logger.error(f"程序启动异常: {e}")
     finally:
         # 清理资源
+        if graph_webhook_manager:
+            graph_webhook_manager.stop_renew_loop()
         if db:
             db.close()
         logger.info("程序已关闭")

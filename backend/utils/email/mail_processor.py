@@ -38,6 +38,7 @@ from .outlook import OutlookMailHandler
 from .imap import IMAPMailHandler
 from .gmail import GmailHandler
 from .qq import QQMailHandler
+from .graph_api import GraphAPIMailHandler
 from ._real_time_check import RealTimeChecker
 
 class MailProcessor:
@@ -227,7 +228,7 @@ class EmailBatchProcessor:
         """保存邮件记录到数据库"""
         return MailProcessor.save_mail_records(db, email_id, mail_records, progress_callback)
 
-    def check_emails(self, email_ids: List[int], progress_callback: Optional[Callable] = None, is_realtime: bool = False) -> bool:
+    def check_emails(self, email_ids: List[int], progress_callback: Optional[Callable] = None, is_realtime: bool = False, use_graph_api: bool = False) -> bool:
         """批量检查邮箱邮件"""
         if not email_ids:
             logger.warning("没有提供邮箱ID")
@@ -263,6 +264,12 @@ class EmailBatchProcessor:
             if not handler:
                 logger.error(f"不支持的邮箱类型: {mail_type}")
                 continue
+
+            # 如果是全局 Graph API 模式且是 Outlook 邮箱，设置 use_graph_api
+            if use_graph_api and mail_type == 'outlook':
+                email_info = dict(email_info)  # 转换为可修改的字典
+                email_info['use_graph_api'] = 1
+                logger.info(f"邮箱 {email_info['email']} 使用全局 Graph API 设置")
 
             # 标记为正在处理
             with self.lock:
@@ -310,6 +317,7 @@ class EmailBatchProcessor:
                 # 处理Outlook邮箱
                 refresh_token = email_info.get('refresh_token')
                 client_id = email_info.get('client_id')
+                use_graph_api = email_info.get('use_graph_api', 0)
 
                 if not refresh_token or not client_id:
                     error_msg = "缺少OAuth2.0认证信息"
@@ -317,61 +325,69 @@ class EmailBatchProcessor:
                         callback(0, error_msg)
                     return {'success': False, 'message': error_msg}
 
-                # 获取新的访问令牌
-                try:
-                    access_token = OutlookMailHandler.get_new_access_token(refresh_token, client_id)
-                    if not access_token:
-                        error_msg = "获取访问令牌失败"
+                # 根据 use_graph_api 选择处理方式
+                if use_graph_api:
+                    # 使用 Graph API 方式
+                    logger.info(f"使用 Graph API 方式处理邮箱: {email_info['email']}")
+                    result = GraphAPIMailHandler.check_mail(email_info, self.db, callback)
+                    return result
+                else:
+                    # 使用原来的 IMAP + OAuth2 方式
+                    # 获取新的访问令牌
+                    try:
+                        access_token = OutlookMailHandler.get_new_access_token(refresh_token, client_id)
+                        if not access_token:
+                            error_msg = "获取访问令牌失败"
+                            if callback:
+                                callback(0, error_msg)
+                            return {'success': False, 'message': error_msg}
+
+                        # 更新邮箱的访问令牌
+                        self.db.update_email_token(email_id, access_token)
+                        email_info['access_token'] = access_token
+
+                        # 记录开始处理
+                        log_email_start(email_info['email'], email_id)
+
+                        # 获取邮件，增加last_check_time参数
+                        mail_records = OutlookMailHandler.fetch_emails(
+                            email_info['email'],
+                            access_token,
+                            folder="inbox",
+                            callback=callback,
+                            last_check_time=last_check_time
+                        )
+
+                        if not mail_records:
+                            if callback:
+                                callback(100, "没有找到新邮件")
+
+                            # 没有找到新邮件也算成功，更新检查时间
+                            self.update_check_time(self.db, email_id)
+
+                            return {'success': True, 'message': '没有找到新邮件'}
+
+                        # 保存邮件记录，传递邮件键列表用于高效去重
+                        mail_keys = [record.get('mail_key', '') for record in mail_records if 'mail_key' in record]
+                        saved_count = self.save_mail_records(self.db, email_id, mail_records, callback)
+
+                        # 更新最后检查时间
+                        self.update_check_time(self.db, email_id)
+
+                        # 记录完成
+                        log_email_complete(email_info['email'], email_id, len(mail_records), len(mail_records), saved_count)
+
+                        return {
+                            'success': True,
+                            'message': f'成功获取{len(mail_records)}封邮件，新增{saved_count}封'
+                        }
+
+                    except Exception as e:
+                        error_msg = f"处理Outlook邮箱失败: {str(e)}"
+                        log_email_error(email_info['email'], email_id, error_msg)
                         if callback:
                             callback(0, error_msg)
                         return {'success': False, 'message': error_msg}
-
-                    # 更新邮箱的访问令牌
-                    self.db.update_email_token(email_id, access_token)
-                    email_info['access_token'] = access_token
-
-                    # 记录开始处理
-                    log_email_start(email_info['email'], email_id)
-
-                    # 获取邮件，增加last_check_time参数
-                    mail_records = OutlookMailHandler.fetch_emails(
-                        email_info['email'],
-                        access_token,
-                        folder="inbox",
-                        callback=callback,
-                        last_check_time=last_check_time
-                    )
-
-                    if not mail_records:
-                        if callback:
-                            callback(100, "没有找到新邮件")
-
-                        # 没有找到新邮件也算成功，更新检查时间
-                        self.update_check_time(self.db, email_id)
-
-                        return {'success': True, 'message': '没有找到新邮件'}
-
-                    # 保存邮件记录，传递邮件键列表用于高效去重
-                    mail_keys = [record.get('mail_key', '') for record in mail_records if 'mail_key' in record]
-                    saved_count = self.save_mail_records(self.db, email_id, mail_records, callback)
-
-                    # 更新最后检查时间
-                    self.update_check_time(self.db, email_id)
-
-                    # 记录完成
-                    log_email_complete(email_info['email'], email_id, len(mail_records), len(mail_records), saved_count)
-
-                    return {
-                        'success': True,
-                        'message': f'成功获取{len(mail_records)}封邮件，新增{saved_count}封'
-                    }
-
-                except Exception as e:
-                    error_msg = f"处理Outlook邮箱失败: {str(e)}"
-                    log_email_error(email_info['email'], email_id, error_msg)
-                    if callback:
-                        callback(0, error_msg)
-                    return {'success': False, 'message': error_msg}
 
             elif mail_type == 'gmail':
                 # 处理Gmail邮箱

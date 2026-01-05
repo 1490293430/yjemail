@@ -8,6 +8,7 @@ from typing import List, Dict, Optional, Callable
 from datetime import datetime
 import traceback
 from utils.email.logger import logger, log_progress
+from utils.crypto import encrypt, decrypt, is_encrypted
 
 # 配置日志
 logger = logging.getLogger('database')
@@ -151,8 +152,23 @@ class Database:
                 )
             ''')
 
+            # 创建 Graph API 订阅表
+            self.conn.execute('''
+                CREATE TABLE IF NOT EXISTS graph_subscriptions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email_id INTEGER NOT NULL,
+                    subscription_id TEXT UNIQUE NOT NULL,
+                    resource TEXT NOT NULL,
+                    expiration_time TIMESTAMP NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (email_id) REFERENCES emails (id) ON DELETE CASCADE
+                )
+            ''')
+
             # 检查并添加新字段
             self._check_and_add_column('emails', 'enable_realtime_check', 'INTEGER DEFAULT 0')
+            self._check_and_add_column('emails', 'use_graph_api', 'INTEGER DEFAULT 0')
             self._check_and_add_column('users', 'password_hash', 'TEXT NOT NULL')
 
             self.conn.commit()
@@ -197,6 +213,30 @@ class Database:
                     "UPDATE system_config SET value = 'true' WHERE key = 'allow_register'"
                 )
                 self.conn.commit()
+        
+        # 初始化 Graph API 全局开关配置，默认开启
+        cursor = self.conn.execute("SELECT value FROM system_config WHERE key = 'use_graph_api'")
+        result = cursor.fetchone()
+        if not result:
+            logger.info("初始化系统配置: 默认启用 Graph API")
+            self.conn.execute(
+                "INSERT INTO system_config (key, value) VALUES ('use_graph_api', 'true')"
+            )
+            self.conn.commit()
+
+    def is_graph_api_enabled(self):
+        """检查是否启用 Graph API"""
+        try:
+            value = self.get_system_config('use_graph_api')
+            return value is None or value.lower() == 'true'  # 默认启用
+        except Exception as e:
+            logger.error(f"检查 Graph API 状态失败: {str(e)}")
+            return True  # 出错时默认启用
+
+    def set_graph_api_enabled(self, enabled):
+        """设置 Graph API 开关"""
+        value = 'true' if enabled else 'false'
+        return self.set_system_config('use_graph_api', value)
 
     def get_system_config(self, key):
         """获取系统配置"""
@@ -394,18 +434,23 @@ class Database:
             else:
                 logger.info(f"尝试添加邮箱: {email} (用户ID: {user_id}, 类型: {mail_type})")
 
+            # 加密敏感字段
+            encrypted_password = encrypt(password) if password else None
+            encrypted_client_id = encrypt(client_id) if client_id else None
+            encrypted_refresh_token = encrypt(refresh_token) if refresh_token else None
+
             # 根据邮箱类型处理SQL，默认启用实时检查
             if mail_type == 'outlook':
                 cursor = self.conn.execute(
                     "INSERT INTO emails (user_id, email, password, client_id, refresh_token, mail_type, enable_realtime_check) VALUES (?, ?, ?, ?, ?, ?, 1)",
-                    (user_id, email, password, client_id, refresh_token, mail_type)
+                    (user_id, email, encrypted_password, encrypted_client_id, encrypted_refresh_token, mail_type)
                 )
             elif mail_type in ['imap', 'gmail', 'qq']:
                 # 将布尔值转换为整数值 (1=True, 0=False)
                 use_ssl_int = 1 if use_ssl else 0
                 cursor = self.conn.execute(
                     "INSERT INTO emails (user_id, email, password, mail_type, server, port, use_ssl, enable_realtime_check) VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
-                    (user_id, email, password, mail_type, server, port, use_ssl_int)
+                    (user_id, email, encrypted_password, mail_type, server, port, use_ssl_int)
                 )
             else:
                 logger.error(f"不支持的邮箱类型: {mail_type}")
@@ -433,7 +478,19 @@ class Database:
             )
         else:
             cursor = self.conn.execute("SELECT * FROM emails ORDER BY created_at DESC")
-        return cursor.fetchall()
+        
+        # 解密敏感字段
+        emails = []
+        for row in cursor.fetchall():
+            email_dict = dict(row)
+            if email_dict.get('password'):
+                email_dict['password'] = decrypt(email_dict['password'])
+            if email_dict.get('client_id'):
+                email_dict['client_id'] = decrypt(email_dict['client_id'])
+            if email_dict.get('refresh_token'):
+                email_dict['refresh_token'] = decrypt(email_dict['refresh_token'])
+            emails.append(email_dict)
+        return emails
 
     def get_emails_by_user_id(self, user_id):
         """根据用户ID获取所有邮箱账号"""
@@ -467,6 +524,14 @@ class Database:
             if 'use_ssl' in email_dict:
                 email_dict['use_ssl'] = bool(email_dict['use_ssl'])
 
+            # 解密敏感字段
+            if email_dict.get('password'):
+                email_dict['password'] = decrypt(email_dict['password'])
+            if email_dict.get('client_id'):
+                email_dict['client_id'] = decrypt(email_dict['client_id'])
+            if email_dict.get('refresh_token'):
+                email_dict['refresh_token'] = decrypt(email_dict['refresh_token'])
+
             if email_dict.get('mail_type') == 'imap':
                 logger.debug(f"获取到IMAP邮箱配置，邮箱ID: {email_id}, 服务器: {email_dict.get('server', 'N/A')}:{email_dict.get('port', 'N/A')}, SSL: {email_dict.get('use_ssl')}")
 
@@ -482,11 +547,17 @@ class Database:
             update_fields = []
             params = []
 
+            # 需要加密的敏感字段
+            sensitive_fields = ['password', 'client_id', 'refresh_token']
+
             # 处理每个更新字段
             for key, value in kwargs.items():
                 if key == 'use_ssl':
                     # 确保use_ssl是整数类型
                     value = 1 if value else 0
+                elif key in sensitive_fields and value:
+                    # 加密敏感字段
+                    value = encrypt(value)
                 update_fields.append(f"{key} = ?")
                 params.append(value)
 
@@ -622,7 +693,21 @@ class Database:
             logger.error(f"添加邮件记录失败: {str(e)}")
             return False, None
 
-    def get_mail_records(self, email_id, user_id=None):
+    def get_mail_count_by_email_id(self, email_id):
+        """获取指定邮箱的邮件数量"""
+        logger.debug(f"获取邮箱邮件数量, ID: {email_id}")
+        try:
+            cursor = self.conn.execute(
+                "SELECT COUNT(*) FROM mail_records WHERE email_id = ?",
+                (email_id,)
+            )
+            result = cursor.fetchone()
+            return result[0] if result else 0
+        except Exception as e:
+            logger.error(f"获取邮件数量失败: {str(e)}")
+            return 0
+
+    def get_mail_records(self, email_id, user_id=None, limit=None):
         """获取指定邮箱的所有邮件记录，可以验证所有者"""
         logger.debug(f"获取邮箱邮件记录, ID: {email_id}")
 
@@ -633,10 +718,11 @@ class Database:
                 logger.warning(f"用户ID {user_id} 没有权限访问邮箱ID {email_id}")
                 return []
 
-        cursor = self.conn.execute(
-            "SELECT * FROM mail_records WHERE email_id = ? ORDER BY received_time DESC",
-            (email_id,)
-        )
+        sql = "SELECT * FROM mail_records WHERE email_id = ? ORDER BY received_time DESC"
+        if limit:
+            sql += f" LIMIT {int(limit)}"
+        
+        cursor = self.conn.execute(sql, (email_id,))
 
         records = []
         for record in cursor.fetchall():
@@ -831,16 +917,16 @@ class Database:
                 WHERE id IN ({placeholders})
             ''', email_ids)
 
-            # 获取结果
+            # 获取结果并解密敏感字段
             emails = []
             for row in cursor:
                 email = {
                     'id': row['id'],
                     'user_id': row['user_id'],
                     'email': row['email'],
-                    'password': row['password'],
-                    'client_id': row['client_id'],
-                    'refresh_token': row['refresh_token'],
+                    'password': decrypt(row['password']) if row['password'] else None,
+                    'client_id': decrypt(row['client_id']) if row['client_id'] else None,
+                    'refresh_token': decrypt(row['refresh_token']) if row['refresh_token'] else None,
                     'mail_type': row['mail_type'],
                     'server': row['server'],
                     'port': row['port'],
@@ -974,7 +1060,19 @@ class Database:
                 WHERE user_id = ? AND enable_realtime_check = 1
                 ORDER BY id
             """, (user_id,))
-            return [dict(row) for row in cursor.fetchall()]
+            
+            # 解密敏感字段
+            emails = []
+            for row in cursor.fetchall():
+                email_dict = dict(row)
+                if email_dict.get('password'):
+                    email_dict['password'] = decrypt(email_dict['password'])
+                if email_dict.get('client_id'):
+                    email_dict['client_id'] = decrypt(email_dict['client_id'])
+                if email_dict.get('refresh_token'):
+                    email_dict['refresh_token'] = decrypt(email_dict['refresh_token'])
+                emails.append(email_dict)
+            return emails
         except Exception as e:
             logger.error(f"获取用户邮箱列表失败: {str(e)}")
             return []
@@ -993,3 +1091,179 @@ class Database:
         except Exception as e:
             logger.error(f"设置邮箱实时检查状态失败: {str(e)}")
             return False
+
+    # ==================== Graph API 订阅相关方法 ====================
+    
+    def add_subscription(self, email_id: int, subscription_id: str, resource: str, expiration_time: str) -> bool:
+        """添加 Graph API 订阅记录"""
+        try:
+            self.conn.execute("""
+                INSERT INTO graph_subscriptions (email_id, subscription_id, resource, expiration_time)
+                VALUES (?, ?, ?, ?)
+            """, (email_id, subscription_id, resource, expiration_time))
+            self.conn.commit()
+            logger.info(f"添加订阅成功: email_id={email_id}, subscription_id={subscription_id}")
+            return True
+        except Exception as e:
+            logger.error(f"添加订阅失败: {str(e)}")
+            return False
+    
+    def get_subscription_by_email_id(self, email_id: int) -> Optional[Dict]:
+        """根据邮箱 ID 获取订阅信息"""
+        try:
+            cursor = self.conn.execute("""
+                SELECT * FROM graph_subscriptions WHERE email_id = ?
+            """, (email_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"获取订阅失败: {str(e)}")
+            return None
+    
+    def get_subscription_by_id(self, subscription_id: str) -> Optional[Dict]:
+        """根据订阅 ID 获取订阅信息"""
+        try:
+            cursor = self.conn.execute("""
+                SELECT * FROM graph_subscriptions WHERE subscription_id = ?
+            """, (subscription_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"获取订阅失败: {str(e)}")
+            return None
+    
+    def get_expiring_subscriptions(self, hours: int = 12) -> List[Dict]:
+        """获取即将过期的订阅（指定小时内过期）"""
+        try:
+            cursor = self.conn.execute("""
+                SELECT * FROM graph_subscriptions 
+                WHERE datetime(expiration_time) <= datetime('now', '+' || ? || ' hours')
+            """, (hours,))
+            return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"获取即将过期的订阅失败: {str(e)}")
+            return []
+    
+    def update_subscription_expiration(self, subscription_id: str, expiration_time: str) -> bool:
+        """更新订阅过期时间"""
+        try:
+            self.conn.execute("""
+                UPDATE graph_subscriptions 
+                SET expiration_time = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE subscription_id = ?
+            """, (expiration_time, subscription_id))
+            self.conn.commit()
+            logger.info(f"更新订阅过期时间成功: {subscription_id}")
+            return True
+        except Exception as e:
+            logger.error(f"更新订阅过期时间失败: {str(e)}")
+            return False
+    
+    def delete_subscription(self, subscription_db_id: int) -> bool:
+        """根据数据库 ID 删除订阅记录"""
+        try:
+            self.conn.execute("""
+                DELETE FROM graph_subscriptions WHERE id = ?
+            """, (subscription_db_id,))
+            self.conn.commit()
+            logger.info(f"删除订阅成功: db_id={subscription_db_id}")
+            return True
+        except Exception as e:
+            logger.error(f"删除订阅失败: {str(e)}")
+            return False
+    
+    def delete_subscription_by_id(self, subscription_id: str) -> bool:
+        """根据订阅 ID 删除订阅记录"""
+        try:
+            self.conn.execute("""
+                DELETE FROM graph_subscriptions WHERE subscription_id = ?
+            """, (subscription_id,))
+            self.conn.commit()
+            logger.info(f"删除订阅成功: subscription_id={subscription_id}")
+            return True
+        except Exception as e:
+            logger.error(f"删除订阅失败: {str(e)}")
+            return False
+    
+    def delete_subscription_by_email_id(self, email_id: int) -> bool:
+        """根据邮箱 ID 删除订阅记录"""
+        try:
+            self.conn.execute("""
+                DELETE FROM graph_subscriptions WHERE email_id = ?
+            """, (email_id,))
+            self.conn.commit()
+            logger.info(f"删除邮箱订阅成功: email_id={email_id}")
+            return True
+        except Exception as e:
+            logger.error(f"删除邮箱订阅失败: {str(e)}")
+            return False
+    
+    def get_all_subscriptions(self) -> List[Dict]:
+        """获取所有订阅"""
+        try:
+            cursor = self.conn.execute("""
+                SELECT gs.*, e.email 
+                FROM graph_subscriptions gs
+                JOIN emails e ON gs.email_id = e.id
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"获取所有订阅失败: {str(e)}")
+            return []
+    
+    def get_all_outlook_emails(self) -> List[Dict]:
+        """获取所有 Outlook 邮箱"""
+        try:
+            cursor = self.conn.execute("""
+                SELECT * FROM emails WHERE mail_type = 'outlook'
+            """)
+            # 解密敏感字段
+            emails = []
+            for row in cursor.fetchall():
+                email_dict = dict(row)
+                if email_dict.get('password'):
+                    email_dict['password'] = decrypt(email_dict['password'])
+                if email_dict.get('client_id'):
+                    email_dict['client_id'] = decrypt(email_dict['client_id'])
+                if email_dict.get('refresh_token'):
+                    email_dict['refresh_token'] = decrypt(email_dict['refresh_token'])
+                emails.append(email_dict)
+            return emails
+        except Exception as e:
+            logger.error(f"获取 Outlook 邮箱列表失败: {str(e)}")
+            return []
+
+    def get_latest_mail_records(self, user_id: int, limit: int = 50, minutes: int = 10) -> List[Dict]:
+        """
+        获取用户所有邮箱的最新邮件
+        优先返回指定分钟内的邮件，如果没有则返回最新的 limit 条
+        """
+        try:
+            # 先查询指定分钟内的邮件
+            cursor = self.conn.execute("""
+                SELECT mr.*, e.email as recipient_email
+                FROM mail_records mr
+                JOIN emails e ON mr.email_id = e.id
+                WHERE e.user_id = ?
+                AND datetime(mr.received_time) >= datetime('now', '-' || ? || ' minutes')
+                ORDER BY mr.received_time DESC
+            """, (user_id, minutes))
+            
+            records = [dict(row) for row in cursor.fetchall()]
+            
+            # 如果指定时间内没有邮件，返回最新的 limit 条
+            if not records:
+                cursor = self.conn.execute("""
+                    SELECT mr.*, e.email as recipient_email
+                    FROM mail_records mr
+                    JOIN emails e ON mr.email_id = e.id
+                    WHERE e.user_id = ?
+                    ORDER BY mr.received_time DESC
+                    LIMIT ?
+                """, (user_id, limit))
+                records = [dict(row) for row in cursor.fetchall()]
+            
+            return records
+        except Exception as e:
+            logger.error(f"获取最新邮件失败: {str(e)}")
+            return []
