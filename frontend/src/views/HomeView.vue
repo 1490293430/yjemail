@@ -17,8 +17,8 @@
       @row-click="viewMailContent"
       class="mail-table"
     >
-      <el-table-column prop="recipient_email" label="收件邮箱" width="220" show-overflow-tooltip />
-      <el-table-column prop="subject" label="主题" min-width="300" show-overflow-tooltip>
+      <el-table-column prop="recipient_email" label="收件邮箱" width="200" show-overflow-tooltip />
+      <el-table-column prop="subject" label="主题" width="250" show-overflow-tooltip>
         <template #default="scope">
           <div class="subject-cell">
             <span>{{ scope.row.subject || '(无主题)' }}</span>
@@ -28,8 +28,13 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="sender" label="发件人" width="200" show-overflow-tooltip />
-      <el-table-column prop="received_time" label="接收时间" width="180">
+      <el-table-column prop="content" label="内容预览" min-width="400">
+        <template #default="scope">
+          <div class="content-preview">{{ getContentPreview(scope.row) }}</div>
+        </template>
+      </el-table-column>
+      <el-table-column prop="sender" label="发件人" width="180" show-overflow-tooltip />
+      <el-table-column prop="received_time" label="接收时间" width="160">
         <template #default="scope">
           <span>{{ formatDate(scope.row.received_time) }}</span>
         </template>
@@ -114,6 +119,27 @@ const getMailContent = (mail) => {
   return mail.content || ''
 }
 
+const getContentPreview = (mail) => {
+  if (!mail) return ''
+  let content = ''
+  
+  if (typeof mail.content === 'object' && mail.content !== null) {
+    content = mail.content.content || mail.content.text || ''
+  } else {
+    content = mail.content || ''
+  }
+  
+  // 移除 HTML 标签
+  content = content.replace(/<[^>]*>/g, ' ')
+  // 移除多余空白
+  content = content.replace(/\s+/g, ' ').trim()
+  // 截取前 200 个字符
+  if (content.length > 200) {
+    content = content.substring(0, 200) + '...'
+  }
+  return content || '(无内容)'
+}
+
 const sanitizeHtml = (html) => {
   if (!html) return ''
   return DOMPurify.sanitize(html, {
@@ -164,6 +190,17 @@ onMounted(() => {
 
 .attachment-tag {
   flex-shrink: 0;
+}
+
+.content-preview {
+  color: #666;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .empty-state {
