@@ -321,6 +321,7 @@ class EmailBatchProcessor:
 
                 if not refresh_token or not client_id:
                     error_msg = "缺少OAuth2.0认证信息"
+                    self.db.update_email_error(email_id, error_msg)
                     if callback:
                         callback(0, error_msg)
                     return {'success': False, 'message': error_msg}
@@ -330,6 +331,9 @@ class EmailBatchProcessor:
                     # 使用 Graph API 方式
                     logger.info(f"使用 Graph API 方式处理邮箱: {email_info['email']}")
                     result = GraphAPIMailHandler.check_mail(email_info, self.db, callback)
+                    # 记录错误状态
+                    if not result.get('success', False):
+                        self.db.update_email_error(email_id, result.get('message', '未知错误'))
                     return result
                 else:
                     # 使用原来的 IMAP + OAuth2 方式
@@ -338,6 +342,7 @@ class EmailBatchProcessor:
                         access_token = OutlookMailHandler.get_new_access_token(refresh_token, client_id)
                         if not access_token:
                             error_msg = "获取访问令牌失败"
+                            self.db.update_email_error(email_id, error_msg)
                             if callback:
                                 callback(0, error_msg)
                             return {'success': False, 'message': error_msg}
@@ -384,6 +389,7 @@ class EmailBatchProcessor:
 
                     except Exception as e:
                         error_msg = f"处理Outlook邮箱失败: {str(e)}"
+                        self.db.update_email_error(email_id, str(e))
                         log_email_error(email_info['email'], email_id, error_msg)
                         if callback:
                             callback(0, error_msg)
@@ -395,6 +401,8 @@ class EmailBatchProcessor:
                 # 只有在成功时更新检查时间
                 if result.get('success', False):
                     self.update_check_time(self.db, email_id)
+                else:
+                    self.db.update_email_error(email_id, result.get('message', '未知错误'))
                 return result
 
             elif mail_type == 'qq':
@@ -403,6 +411,8 @@ class EmailBatchProcessor:
                 # 只有在成功时更新检查时间
                 if result.get('success', False):
                     self.update_check_time(self.db, email_id)
+                else:
+                    self.db.update_email_error(email_id, result.get('message', '未知错误'))
                 return result
 
             else:
@@ -447,6 +457,7 @@ class EmailBatchProcessor:
 
                 except Exception as e:
                     error_msg = f"处理IMAP邮箱失败: {str(e)}"
+                    self.db.update_email_error(email_id, str(e))
                     log_email_error(email_info['email'], email_id, error_msg)
                     if callback:
                         callback(0, error_msg)
@@ -454,6 +465,7 @@ class EmailBatchProcessor:
 
         except Exception as e:
             error_msg = f"处理邮箱失败: {str(e)}"
+            self.db.update_email_error(email_id, str(e))
             log_email_error(email_info['email'], email_id, error_msg)
             if callback:
                 callback(0, error_msg)

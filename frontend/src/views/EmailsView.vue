@@ -18,6 +18,9 @@
                   />
                 </div>
               </el-tooltip>
+              <el-button type="warning" size="small" @click="exportEmails" :icon="Download" style="margin-left: 12px;">
+                导出邮箱
+              </el-button>
             </div>
             <div class="actions flex gap-md">
               <el-button type="primary" @click="refreshEmails" :icon="Refresh" class="hover-scale">
@@ -67,7 +70,21 @@
             width="55"
             :selectable="row => row"
           />
-          <el-table-column prop="email" label="邮箱地址" :width="columnWidths.email" resizable />
+          <el-table-column prop="email" label="邮箱地址" :width="columnWidths.email" resizable>
+            <template #default="scope">
+              <div class="email-cell">
+                <span class="email-text" :class="{ 'email-error': scope.row.last_error }">{{ scope.row.email }}</span>
+                <el-button
+                  type="primary"
+                  link
+                  size="small"
+                  :icon="CopyDocument"
+                  @click.stop="copyEmail(scope.row.email)"
+                  class="copy-btn"
+                />
+              </div>
+            </template>
+          </el-table-column>
           <el-table-column prop="mail_type" label="邮箱类型" :width="columnWidths.mail_type" resizable>
             <template #default="scope">
               <el-tag
@@ -125,7 +142,12 @@
           </el-table-column>
           <el-table-column prop="last_check_time" label="最后检查时间" :width="columnWidths.last_check_time" resizable>
             <template #default="scope">
-              <span>{{ formatDate(scope.row.last_check_time) }}</span>
+              <div v-if="scope.row.last_error" class="error-info">
+                <el-tooltip :content="scope.row.last_error" placement="top">
+                  <span class="error-text">{{ scope.row.last_error }}</span>
+                </el-tooltip>
+              </div>
+              <span v-else>{{ formatDate(scope.row.last_check_time) }}</span>
             </template>
           </el-table-column>
           <el-table-column label="操作" fixed="right" :width="columnWidths.actions" resizable>
@@ -472,7 +494,8 @@ import {
   Message,
   View,
   Hide,
-  InfoFilled
+  InfoFilled,
+  CopyDocument
 } from '@element-plus/icons-vue'
 import dayjs from 'dayjs'
 import DOMPurify from 'dompurify'
@@ -980,6 +1003,16 @@ const getEmailActionText = (email) => {
   return isEmailProcessing(email) ? '检查中...' : '检查邮件'
 }
 
+// 复制邮箱地址
+const copyEmail = async (email) => {
+  try {
+    await navigator.clipboard.writeText(email)
+    ElMessage.success('已复制邮箱地址')
+  } catch (error) {
+    ElMessage.error('复制失败')
+  }
+}
+
 const togglePasswordVisibility = async (row) => {
   // 如果已经显示密码，则隐藏
   if (row.showPassword) {
@@ -1031,6 +1064,37 @@ const handleGlobalGraphApiChange = async (value) => {
     console.error('设置 Graph API 配置失败:', error)
     globalUseGraphApi.value = !value
     ElMessage.error('设置失败: ' + (error.message || '网络错误'))
+  }
+}
+
+// 导出邮箱
+const exportEmails = async () => {
+  try {
+    const response = await fetch('/api/emails/export', {
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('token')}`
+      }
+    })
+    
+    if (!response.ok) {
+      ElMessage.error('导出失败')
+      return
+    }
+    
+    const blob = await response.blob()
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `emails_export_${new Date().toISOString().slice(0, 10)}.txt`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    window.URL.revokeObjectURL(url)
+    
+    ElMessage.success('导出成功')
+  } catch (error) {
+    console.error('导出邮箱失败:', error)
+    ElMessage.error('导出失败: ' + (error.message || '网络错误'))
   }
 }
 
@@ -1347,6 +1411,50 @@ onMounted(() => {
   max-width: 1200px;
   margin: 0 auto;
   width: 100%;
+}
+
+.email-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.email-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.email-text.email-error {
+  color: #f56c6c;
+  font-weight: 500;
+}
+
+.error-info {
+  max-width: 100%;
+}
+
+.error-text {
+  color: #f56c6c;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+  cursor: help;
+}
+
+.copy-btn {
+  flex-shrink: 0;
+  padding: 2px;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+.copy-btn:hover {
+  opacity: 1;
 }
 
 .email-list-card {

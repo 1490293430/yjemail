@@ -169,6 +169,8 @@ class Database:
             # 检查并添加新字段
             self._check_and_add_column('emails', 'enable_realtime_check', 'INTEGER DEFAULT 0')
             self._check_and_add_column('emails', 'use_graph_api', 'INTEGER DEFAULT 0')
+            self._check_and_add_column('emails', 'last_error', 'TEXT')
+            self._check_and_add_column('emails', 'error_time', 'TIMESTAMP')
             self._check_and_add_column('users', 'password_hash', 'TEXT NOT NULL')
 
             self.conn.commit()
@@ -469,15 +471,17 @@ class Database:
             return False
 
     def get_all_emails(self, user_id=None):
-        """获取所有邮箱账号，可以按用户ID过滤"""
+        """获取所有邮箱账号，可以按用户ID过滤，有错误的排在前面"""
         logger.debug(f"获取所有邮箱账号 (用户ID: {user_id if user_id else 'all'})")
+        # 有错误的邮箱排在前面，然后按创建时间倒序
+        order_clause = "ORDER BY (CASE WHEN last_error IS NOT NULL THEN 0 ELSE 1 END), created_at DESC"
         if user_id:
             cursor = self.conn.execute(
-                "SELECT * FROM emails WHERE user_id = ? ORDER BY created_at DESC",
+                f"SELECT * FROM emails WHERE user_id = ? {order_clause}",
                 (user_id,)
             )
         else:
-            cursor = self.conn.execute("SELECT * FROM emails ORDER BY created_at DESC")
+            cursor = self.conn.execute(f"SELECT * FROM emails {order_clause}")
         
         # 解密敏感字段
         emails = []
@@ -590,10 +594,31 @@ class Database:
             return False
 
     def update_check_time(self, email_id):
-        """更新邮箱的最后检查时间"""
+        """更新邮箱的最后检查时间，并清除错误状态"""
         logger.debug(f"更新邮箱最后检查时间, ID: {email_id}")
         self.conn.execute(
-            "UPDATE emails SET last_check_time = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            "UPDATE emails SET last_check_time = CURRENT_TIMESTAMP, last_error = NULL, error_time = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (email_id,)
+        )
+        self.conn.commit()
+
+    def update_email_error(self, email_id, error_message):
+        """更新邮箱的错误状态"""
+        logger.debug(f"更新邮箱错误状态, ID: {email_id}, 错误: {error_message}")
+        # 截断错误信息，避免过长
+        if error_message and len(error_message) > 200:
+            error_message = error_message[:200] + '...'
+        self.conn.execute(
+            "UPDATE emails SET last_error = ?, error_time = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (error_message, email_id)
+        )
+        self.conn.commit()
+
+    def clear_email_error(self, email_id):
+        """清除邮箱的错误状态"""
+        logger.debug(f"清除邮箱错误状态, ID: {email_id}")
+        self.conn.execute(
+            "UPDATE emails SET last_error = NULL, error_time = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (email_id,)
         )
         self.conn.commit()

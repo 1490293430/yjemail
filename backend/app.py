@@ -408,6 +408,37 @@ def get_all_emails(current_user):
 
     return jsonify([dict(email) for email in emails])
 
+@app.route('/api/emails/export', methods=['GET'])
+@token_required
+def export_emails(current_user):
+    """导出邮箱列表为文本文件"""
+    from flask import Response
+    
+    # 获取用户的邮箱
+    if current_user['is_admin']:
+        emails = db.get_all_emails()
+    else:
+        emails = db.get_all_emails(current_user['id'])
+    
+    # 按导入格式生成内容：邮箱地址----密码----客户端ID----刷新令牌
+    lines = []
+    for email in emails:
+        mail_type = email.get('mail_type', 'outlook')
+        if mail_type == 'outlook':
+            line = f"{email['email']}----{email.get('password', '')}----{email.get('client_id', '')}----{email.get('refresh_token', '')}"
+        else:
+            # 非 Outlook 邮箱只导出邮箱和密码
+            line = f"{email['email']}----{email.get('password', '')}----{mail_type}"
+        lines.append(line)
+    
+    content = '\n'.join(lines)
+    
+    return Response(
+        content,
+        mimetype='text/plain',
+        headers={'Content-Disposition': 'attachment; filename=emails_export.txt'}
+    )
+
 @app.route('/api/emails', methods=['POST'])
 @token_required
 def add_email(current_user):
