@@ -44,6 +44,10 @@ class Database:
                             # 表存在但没有用户，需要初始化
                             logger.info("数据库表结构存在但没有用户数据，执行初始化")
                             cls._instance.init_db()
+                        else:
+                            # 表存在且有用户，只执行迁移检查新字段
+                            logger.info("数据库已初始化，检查并添加新字段")
+                            cls._instance._migrate_columns()
                     else:
                         # 表不存在，需要初始化
                         logger.info("数据库文件存在但缺少必要表结构，执行初始化")
@@ -182,6 +186,18 @@ class Database:
         except Exception as e:
             logger.error(f"初始化数据库表结构失败: {str(e)}")
             traceback.print_exc()
+
+    def _migrate_columns(self):
+        """迁移检查：为已存在的数据库添加新字段"""
+        try:
+            self._check_and_add_column('emails', 'enable_realtime_check', 'INTEGER DEFAULT 0')
+            self._check_and_add_column('emails', 'use_graph_api', 'INTEGER DEFAULT 0')
+            self._check_and_add_column('emails', 'last_error', 'TEXT')
+            self._check_and_add_column('emails', 'error_time', 'TIMESTAMP')
+            self._check_and_add_column('users', 'password_hash', 'TEXT')
+            logger.info("数据库字段迁移检查完成")
+        except Exception as e:
+            logger.error(f"数据库字段迁移失败: {str(e)}")
 
     def _check_and_add_column(self, table, column, type_def):
         """检查表中是否存在某列，如果不存在则添加"""
