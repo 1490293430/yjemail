@@ -148,7 +148,7 @@ def login():
             'user_id': user['id'],
             'username': user['username'],
             'is_admin': user['is_admin'],
-            'exp': datetime.datetime.utcnow() + datetime.timedelta(days=7)
+            'exp': datetime.datetime.utcnow() + datetime.timedelta(days=365)  # 1年有效期
         }, JWT_SECRET, algorithm="HS256")
 
         # 创建响应
@@ -706,6 +706,166 @@ def get_mail_records(current_user, email_id):
     mail_records = db.get_mail_records(email_id)
     return jsonify([dict(record) for record in mail_records])
 
+@app.route('/api/emails/get_code', methods=['POST'])
+@token_required
+def get_verification_code(current_user):
+    """
+    提取指定邮箱的验证码（等待收信模式）
+    
+    请求体:
+    {
+        "email": "example@outlook.com",  # 邮箱地址
+        "keyword": "验证码",              # 可选，搜索关键词，默认搜索常见验证码关键词
+        "timeout": 60                     # 可选，超时时间（秒），默认60秒
+    }
+    
+    返回:
+    {
+        "success": true,
+        "email": "example@outlook.com",
+        "code": "123456",
+        "subject": "您的验证码",
+        "sender": "noreply@example.com",
+        "received_time": "2026-01-09 12:00:00"
+    }
+    """
+    import re
+    import time
+    from datetime import datetime, timedelta
+    
+    data = request.get_json() or {}
+    email_address = data.get('email')
+    keyword = data.get('keyword', '')
+    timeout = data.get('timeout', 60)  # 默认60秒超时
+    
+    if not email_address:
+        return jsonify({'success': False, 'error': '请提供邮箱地址'}), 400
+    
+    # 查找邮箱
+    if current_user['is_admin']:
+        emails = db.get_all_emails()
+    else:
+        emails = db.get_all_emails(current_user['id'])
+    
+    email_info = None
+    for e in emails:
+        if e['email'].lower() == email_address.lower():
+            email_info = e
+            break
+    
+    if not email_info:
+        return jsonify({'success': False, 'error': f'邮箱 {email_address} 不存在或您没有权限'}), 404
+    
+    # 验证码匹配模式
+    code_patterns = [
+        r'验证码[：:\s]*(\d{4,8})',
+        r'code[：:\s]*(\d{4,8})',
+        r'verification[：:\s]*(\d{4,8})',
+        r'(\d{4,8})\s*(?:是您的|为您的|is your)',
+        r'\b(\d{4,8})\b',  # 4-8位纯数字（放最后，优先级最低）
+    ]
+    
+    # 常见验证码关键词
+    code_keywords = ['验证码', 'verification', 'code', 'verify', '确认码', 'OTP', 'pin']
+    
+    def extract_code_from_mail(mail):
+        """从邮件中提取验证码"""
+        subject = mail.get('subject', '')
+        content = mail.get('content', '')
+        sender = mail.get('sender', '')
+        received_time = mail.get('received_time', '')
+        
+        # 如果指定了关键词，检查是否匹配
+        if keyword:
+            if keyword.lower() not in subject.lower() and keyword.lower() not in content.lower():
+                return None
+        else:
+            # 检查是否包含验证码相关关键词
+            has_keyword = False
+            for kw in code_keywords:
+                if kw.lower() in subject.lower() or kw.lower() in content.lower():
+                    has_keyword = True
+                    break
+            if not has_keyword:
+                return None
+        
+        # 尝试提取验证码
+        text_to_search = f"{subject} {content}"
+        
+        for pattern in code_patterns:
+            matches = re.findall(pattern, text_to_search, re.IGNORECASE)
+            if matches:
+                code = matches[0] if isinstance(matches[0], str) else matches[0][0]
+                # 验证码通常是4-8位数字
+                if code.isdigit() and 4 <= len(code) <= 8:
+                    return {
+                        'success': True,
+                        'email': email_address,
+                        'code': code,
+                        'subject': subject,
+                        'sender': sender,
+                        'received_time': received_time
+                    }
+        return None
+    
+    # 记录开始时间，用于筛选新邮件
+    start_time = datetime.now()
+    end_time = start_time + timedelta(seconds=timeout)
+    
+    # 先检查现有邮件（最近30秒内的）
+    mail_records = db.get_mail_records(email_info['id'])
+    recent_limit = start_time - timedelta(seconds=30)
+    
+    for mail in mail_records:
+        received_time = mail.get('received_time', '')
+        if received_time:
+            try:
+                mail_time = datetime.fromisoformat(received_time.replace('Z', '+00:00').replace('+00:00', ''))
+                if mail_time >= recent_limit:
+                    result = extract_code_from_mail(mail)
+                    if result:
+                        return jsonify(result)
+            except:
+                pass
+    
+    # 等待新邮件（Graph API订阅模式会自动推送）
+    logger.info(f"等待邮箱 {email_address} 的验证码，超时时间 {timeout} 秒")
+    
+    check_interval = 2  # 每2秒检查一次数据库
+    last_mail_count = len(mail_records)
+    
+    while datetime.now() < end_time:
+        # 等待一段时间
+        time.sleep(check_interval)
+        
+        # 重新获取邮件记录
+        mail_records = db.get_mail_records(email_info['id'])
+        
+        # 检查是否有新邮件
+        if len(mail_records) > last_mail_count:
+            # 检查新邮件
+            for mail in mail_records:
+                received_time = mail.get('received_time', '')
+                if received_time:
+                    try:
+                        mail_time = datetime.fromisoformat(received_time.replace('Z', '+00:00').replace('+00:00', ''))
+                        # 只检查开始等待后收到的邮件
+                        if mail_time >= start_time - timedelta(seconds=10):
+                            result = extract_code_from_mail(mail)
+                            if result:
+                                logger.info(f"成功提取验证码: {result['code']}")
+                                return jsonify(result)
+                    except:
+                        pass
+            last_mail_count = len(mail_records)
+    
+    logger.info(f"等待验证码超时: {email_address}")
+    return jsonify({
+        'success': False,
+        'error': f'等待{timeout}秒后仍未收到验证码邮件',
+        'email': email_address
+    }), 404
+
 @app.route('/api/mail_records/latest', methods=['GET'])
 @token_required
 def get_latest_mail_records(current_user):
@@ -1151,6 +1311,78 @@ def get_all_platforms(current_user):
     """获取所有已使用的平台列表"""
     platforms = db.get_all_platforms(current_user['id'])
     return jsonify(platforms)
+
+@app.route('/api/platforms/<platform_name>/unregistered', methods=['GET'])
+@token_required
+def get_unregistered_emails(current_user, platform_name):
+    """
+    获取未注册某个平台的所有邮箱
+    
+    返回:
+    {
+        "platform": "MoreLogin",
+        "count": 100,
+        "emails": ["a@outlook.com", "b@outlook.com", ...]
+    }
+    """
+    # 获取用户所有邮箱
+    if current_user['is_admin']:
+        all_emails = db.get_all_emails()
+    else:
+        all_emails = db.get_all_emails(current_user['id'])
+    
+    # 筛选未注册该平台的邮箱
+    unregistered = []
+    platform_lower = platform_name.lower()
+    
+    for email in all_emails:
+        platforms = db.get_email_platforms(email['id'])
+        # 检查是否已注册该平台（不区分大小写）
+        has_platform = any(p.lower() == platform_lower for p in platforms)
+        if not has_platform:
+            unregistered.append(email['email'])
+    
+    return jsonify({
+        'platform': platform_name,
+        'count': len(unregistered),
+        'emails': unregistered
+    })
+
+@app.route('/api/platforms/<platform_name>/registered', methods=['GET'])
+@token_required
+def get_registered_emails(current_user, platform_name):
+    """
+    获取已注册某个平台的所有邮箱
+    
+    返回:
+    {
+        "platform": "MoreLogin",
+        "count": 17,
+        "emails": ["a@outlook.com", "b@outlook.com", ...]
+    }
+    """
+    # 获取用户所有邮箱
+    if current_user['is_admin']:
+        all_emails = db.get_all_emails()
+    else:
+        all_emails = db.get_all_emails(current_user['id'])
+    
+    # 筛选已注册该平台的邮箱
+    registered = []
+    platform_lower = platform_name.lower()
+    
+    for email in all_emails:
+        platforms = db.get_email_platforms(email['id'])
+        # 检查是否已注册该平台（不区分大小写）
+        has_platform = any(p.lower() == platform_lower for p in platforms)
+        if has_platform:
+            registered.append(email['email'])
+    
+    return jsonify({
+        'platform': platform_name,
+        'count': len(registered),
+        'emails': registered
+    })
 
 @app.route('/api/emails/batch_add_platform', methods=['POST'])
 @token_required
