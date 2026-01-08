@@ -980,9 +980,12 @@ const filteredEmails = computed(() => {
   
   // 筛选特定平台（不区分大小写）
   const filterLower = filterPlatform.value.toLowerCase()
-  return emails.value.filter(email => {
+  console.log('筛选平台:', filterPlatform.value, '模式:', filterPlatformMode.value)
+  console.log('邮箱总数:', emails.value.length)
+  
+  const result = emails.value.filter(email => {
     const platforms = email.platforms || []
-    const hasPlatform = platforms.some(p => p.toLowerCase() === filterLower)
+    const hasPlatform = platforms.some(p => p && p.toLowerCase() === filterLower)
     
     if (filterPlatformMode.value === 'has') {
       return hasPlatform
@@ -990,6 +993,13 @@ const filteredEmails = computed(() => {
       return !hasPlatform
     }
   })
+  
+  console.log('筛选结果数:', result.length)
+  if (result.length > 0) {
+    console.log('第一个结果:', result[0].email, result[0].platforms)
+  }
+  
+  return result
 })
 
 // 异常邮箱数量
