@@ -563,7 +563,7 @@
   ```json
   {
     "status": "ok",
-    "message": "花火邮箱助手服务正在运行"
+    "message": "Outlook邮箱助手服务正在运行"
   }
   ```
 

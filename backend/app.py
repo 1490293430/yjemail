@@ -361,7 +361,7 @@ def reset_user_password(current_user, user_id):
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """健康检查接口"""
-    return jsonify({'status': 'ok', 'message': '花火邮箱助手服务正在运行'})
+    return jsonify({'status': 'ok', 'message': 'Outlook邮箱助手服务正在运行'})
 
 @app.route('/api/config', methods=['GET'])
 def get_config():
@@ -1730,7 +1730,7 @@ def get_graph_api_status(current_user):
 
 def parse_args():
     """解析命令行参数"""
-    parser = argparse.ArgumentParser(description='花火邮箱助手')
+    parser = argparse.ArgumentParser(description='Outlook邮箱助手')
     parser.add_argument('--host', default='0.0.0.0', help='主机地址')
     parser.add_argument('--port', type=int, default=5000, help='HTTP端口')
     parser.add_argument('--ws-port', type=int, default=8765, help='WebSocket端口')
@@ -1775,7 +1775,7 @@ if __name__ == '__main__':
         logger.info("IMAP 轮询已禁用，请使用 Graph API Webhook 或手动检查")
 
         # 启动Flask应用
-        logger.info(f"花火邮箱助手启动于 http://{args.host}:{args.port}")
+        logger.info(f"Outlook邮箱助手启动于 http://{args.host}:{args.port}")
         app.run(host=args.host, port=args.port, debug=args.debug)
     except KeyboardInterrupt:
         logger.info("程序被用户中断，正在关闭...")

@@ -159,9 +159,22 @@ class WebSocketHandler:
     
     async def handle_get_all_emails(self, websocket):
         """处理获取所有邮箱的请求"""
-        emails = self.db.get_all_emails()
-        # 转换为可序列化的字典列表
-        emails_list = [dict(email) for email in emails]
+        # 获取用户信息
+        user_info = self.connected_clients.get(websocket)
+        if user_info and user_info.get('is_admin'):
+            emails = self.db.get_all_emails()
+        elif user_info:
+            emails = self.db.get_all_emails(user_info.get('id'))
+        else:
+            emails = self.db.get_all_emails()
+        
+        # 转换为可序列化的字典列表，并添加平台标签
+        emails_list = []
+        for email in emails:
+            email_dict = dict(email)
+            email_dict['platforms'] = self.db.get_email_platforms(email_dict['id'])
+            emails_list.append(email_dict)
+        
         await self.send_to_client(websocket, {
             'type': 'emails_list',
             'data': emails_list

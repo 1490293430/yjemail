@@ -11,7 +11,7 @@ export FRONTEND_PORT="${FRONTEND_PORT:-3000}"
 export JWT_SECRET_KEY="${JWT_SECRET_KEY:-huohuo_email_secret_key}"
 export TZ="${TZ:-Asia/Shanghai}"
 
-echo "花火邮箱助手正在启动..."
+echo "Outlook邮箱助手正在启动..."
 echo "后端API地址: http://$HOST:$FLASK_PORT"
 echo "WebSocket服务地址: ws://$HOST:$WS_PORT"
 echo "前端服务地址: http://$HOST:80"

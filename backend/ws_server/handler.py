@@ -185,8 +185,12 @@ class WebSocketHandler:
             else:
                 emails = self.db.get_all_emails(user_id)
             
-            # 将邮箱记录转换为字典列表
-            emails_list = [dict(email) for email in emails]
+            # 将邮箱记录转换为字典列表，并添加平台标签
+            emails_list = []
+            for email in emails:
+                email_dict = dict(email)
+                email_dict['platforms'] = self.db.get_email_platforms(email_dict['id'])
+                emails_list.append(email_dict)
             
             # 发送响应
             await websocket.send(json.dumps({

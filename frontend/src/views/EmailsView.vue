@@ -980,8 +980,6 @@ const filteredEmails = computed(() => {
   
   // 筛选特定平台（不区分大小写）
   const filterLower = filterPlatform.value.toLowerCase()
-  console.log('筛选平台:', filterPlatform.value, '模式:', filterPlatformMode.value)
-  console.log('邮箱总数:', emails.value.length)
   
   const result = emails.value.filter(email => {
     const platforms = email.platforms || []
@@ -993,11 +991,6 @@ const filteredEmails = computed(() => {
       return !hasPlatform
     }
   })
-  
-  console.log('筛选结果数:', result.length)
-  if (result.length > 0) {
-    console.log('第一个结果:', result[0].email, result[0].platforms)
-  }
   
   return result
 })
