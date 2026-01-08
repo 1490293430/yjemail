@@ -978,10 +978,11 @@ const filteredEmails = computed(() => {
     return emails.value
   }
   
-  // 筛选特定平台
+  // 筛选特定平台（不区分大小写）
+  const filterLower = filterPlatform.value.toLowerCase()
   return emails.value.filter(email => {
     const platforms = email.platforms || []
-    const hasPlatform = platforms.includes(filterPlatform.value)
+    const hasPlatform = platforms.some(p => p.toLowerCase() === filterLower)
     
     if (filterPlatformMode.value === 'has') {
       return hasPlatform
