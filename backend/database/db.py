@@ -239,6 +239,34 @@ class Database:
             self._check_and_add_column('emails', 'error_time', 'TIMESTAMP')
             self._check_and_add_column('users', 'password_hash', 'TEXT')
             
+            # 创建平台标签表（如果不存在）
+            self.conn.execute('''
+                CREATE TABLE IF NOT EXISTS email_platforms (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email_id INTEGER NOT NULL,
+                    platform_name TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (email_id) REFERENCES emails (id) ON DELETE CASCADE,
+                    UNIQUE (email_id, platform_name)
+                )
+            ''')
+            
+            # 创建平台识别规则表（如果不存在）
+            self.conn.execute('''
+                CREATE TABLE IF NOT EXISTS platform_rules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    platform_name TEXT NOT NULL,
+                    sender_pattern TEXT,
+                    subject_pattern TEXT,
+                    content_pattern TEXT,
+                    is_enabled INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+                )
+            ''')
+            
             # 创建平台纠正映射表（如果不存在）
             self.conn.execute('''
                 CREATE TABLE IF NOT EXISTS platform_corrections (
@@ -1295,7 +1323,7 @@ class Database:
             return []
 
     def get_user_emails(self, user_id: int) -> List[Dict]:
-        """获取用户的所有邮箱"""
+        """获取用户的所有邮箱（仅启用实时检查的）"""
         try:
             cursor = self.conn.execute("""
                 SELECT id, email, password, mail_type, server, port,
@@ -1320,6 +1348,33 @@ class Database:
             return emails
         except Exception as e:
             logger.error(f"获取用户邮箱列表失败: {str(e)}")
+            return []
+
+    def get_all_emails_by_user(self, user_id: int) -> List[Dict]:
+        """获取用户的所有邮箱（不限制实时检查状态）"""
+        try:
+            cursor = self.conn.execute("""
+                SELECT id, email, password, mail_type, server, port,
+                       use_ssl, client_id, refresh_token, last_check_time,
+                       enable_realtime_check
+                FROM emails
+                WHERE user_id = ?
+                ORDER BY id
+            """, (user_id,))
+            
+            emails = []
+            for row in cursor.fetchall():
+                email_dict = dict(row)
+                if email_dict.get('password'):
+                    email_dict['password'] = decrypt(email_dict['password'])
+                if email_dict.get('client_id'):
+                    email_dict['client_id'] = decrypt(email_dict['client_id'])
+                if email_dict.get('refresh_token'):
+                    email_dict['refresh_token'] = decrypt(email_dict['refresh_token'])
+                emails.append(email_dict)
+            return emails
+        except Exception as e:
+            logger.error(f"获取用户所有邮箱失败: {str(e)}")
             return []
 
     def set_email_realtime_check(self, email_id: int, enable: bool) -> bool:

@@ -1319,7 +1319,7 @@ def scan_emails_for_platforms(current_user):
     """
     try:
         # 获取用户的所有邮箱
-        emails = db.get_emails(current_user['id'])
+        emails = db.get_all_emails_by_user(current_user['id'])
         if not emails:
             return jsonify({'message': '没有邮箱', 'scanned': 0, 'tagged': 0})
         
