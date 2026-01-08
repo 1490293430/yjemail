@@ -5,15 +5,20 @@
         <template #header>
           <div class="card-header flex-between">
             <h2 class="page-title">平台识别规则</h2>
-            <el-button type="primary" @click="showAddDialog" :icon="Plus">
-              添加规则
-            </el-button>
+            <div class="header-actions">
+              <el-button type="success" @click="scanExistingEmails" :loading="scanning" :icon="Search">
+                扫描已有邮件
+              </el-button>
+              <el-button type="primary" @click="showAddDialog" :icon="Plus">
+                添加规则
+              </el-button>
+            </div>
           </div>
         </template>
 
         <el-alert type="info" :closable="false" style="margin-bottom: 16px;">
           <template #title>
-            当收到新邮件时，系统会自动匹配规则并标记对应平台。支持正则表达式或简单文本匹配。
+            当收到新邮件时，系统会自动匹配规则并标记对应平台。点击"扫描已有邮件"可对历史邮件进行识别。
           </template>
         </el-alert>
 
@@ -121,9 +126,10 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
+import { Plus, Search } from '@element-plus/icons-vue'
 
 const loading = ref(false)
+const scanning = ref(false)
 const rules = ref([])
 const dialogVisible = ref(false)
 const isEditing = ref(false)
@@ -312,6 +318,42 @@ const addPresetRule = (preset) => {
   dialogVisible.value = true
 }
 
+// 扫描已有邮件
+const scanExistingEmails = async () => {
+  try {
+    await ElMessageBox.confirm(
+      '将扫描所有已有邮件并自动识别平台，这可能需要一些时间。确定继续吗？',
+      '扫描确认',
+      { type: 'info' }
+    )
+  } catch {
+    return
+  }
+  
+  scanning.value = true
+  try {
+    const response = await fetch('/api/platforms/scan_emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('token')}`
+      }
+    })
+    
+    if (response.ok) {
+      const data = await response.json()
+      ElMessage.success(data.message)
+    } else {
+      const data = await response.json()
+      ElMessage.error(data.error || '扫描失败')
+    }
+  } catch (error) {
+    console.error('扫描失败:', error)
+    ElMessage.error('扫描失败')
+  } finally {
+    scanning.value = false
+  }
+}
+
 onMounted(() => {
   fetchRules()
 })
@@ -334,6 +376,11 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .page-title {

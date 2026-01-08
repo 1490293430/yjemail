@@ -1311,6 +1311,66 @@ def rename_platform(current_user):
     count = db.rename_platform(current_user['id'], old_name, new_name)
     return jsonify({'message': f'已更新 {count} 个邮箱', 'count': count})
 
+@app.route('/api/platforms/scan_emails', methods=['POST'])
+@token_required
+def scan_emails_for_platforms(current_user):
+    """
+    扫描已有邮件，识别平台并标记
+    """
+    try:
+        # 获取用户的所有邮箱
+        emails = db.get_emails(current_user['id'])
+        if not emails:
+            return jsonify({'message': '没有邮箱', 'scanned': 0, 'tagged': 0})
+        
+        scanned_count = 0
+        tagged_count = 0
+        
+        for email in emails:
+            # 获取该邮箱的所有邮件
+            mail_records = db.get_mail_records(email['id'], current_user['id'])
+            
+            for mail in mail_records:
+                scanned_count += 1
+                sender = mail.get('sender', '')
+                subject = mail.get('subject', '')
+                content = mail.get('content', '')
+                if isinstance(content, dict):
+                    content = content.get('text', '') or content.get('html', '')
+                
+                # 调用自动标记逻辑
+                # 先检查纠正映射
+                sender_domain = db._extract_sender_domain(sender)
+                if sender_domain:
+                    corrected_name = db.get_platform_correction(current_user['id'], sender_domain)
+                    if corrected_name:
+                        if db.add_email_platform(email['id'], corrected_name):
+                            tagged_count += 1
+                        continue
+                
+                # 尝试用户自定义规则
+                matched_platforms = db.match_platform_rules(current_user['id'], sender, subject, content)
+                
+                # 如果没有匹配，尝试通用识别
+                if not matched_platforms:
+                    platform = db._detect_registration_email(sender, subject, content)
+                    if platform:
+                        matched_platforms = [platform]
+                
+                # 添加平台标签
+                for platform in matched_platforms:
+                    if db.add_email_platform(email['id'], platform):
+                        tagged_count += 1
+        
+        return jsonify({
+            'message': f'扫描完成，共扫描 {scanned_count} 封邮件，标记 {tagged_count} 个平台',
+            'scanned': scanned_count,
+            'tagged': tagged_count
+        })
+    except Exception as e:
+        logger.error(f"扫描邮件失败: {str(e)}")
+        return jsonify({'error': f'扫描失败: {str(e)}'}), 500
+
 @app.route('/api/email/start_real_time_check', methods=['POST'])
 @token_required
 def start_real_time_check():

@@ -29,8 +29,8 @@
                   />
                 </div>
               </el-tooltip>
-              <el-button type="warning" size="small" @click="exportEmails" :icon="Download" style="margin-left: 12px;">
-                导出邮箱
+              <el-button type="warning" size="small" @click="exportAllEmails" :icon="Download" style="margin-left: 12px;">
+                导出全部邮箱
               </el-button>
             </div>
             <div class="actions flex gap-md">
@@ -64,13 +64,13 @@
             批量收信
           </el-button>
           <el-button
-            type="success"
-            :disabled="!hasSelectedEmails"
-            @click="showBatchAddPlatformDialog"
-            :icon="CollectionTag"
+            type="danger"
+            @click="clearErrorEmails"
+            :icon="Delete"
             class="hover-scale"
+            v-if="errorEmailCount > 0"
           >
-            批量标记平台
+            清除异常邮箱 ({{ errorEmailCount }})
           </el-button>
           <el-button
             type="warning"
@@ -87,7 +87,7 @@
             <span style="font-size: 14px; color: #606266;">筛选平台:</span>
             <el-select
               v-model="filterPlatform"
-              placeholder="全部"
+              placeholder="选择平台"
               clearable
               style="width: 160px;"
               @change="handlePlatformFilterChange"
@@ -99,10 +99,19 @@
                 :value="p.platform_name"
               />
             </el-select>
-            <el-radio-group v-model="filterPlatformMode" size="small" @change="handlePlatformFilterChange">
+            <el-radio-group v-model="filterPlatformMode" size="small" @change="handlePlatformFilterChange" :disabled="!filterPlatform">
               <el-radio-button label="has">已注册</el-radio-button>
               <el-radio-button label="not">未注册</el-radio-button>
             </el-radio-group>
+            <el-button 
+              type="success" 
+              size="small" 
+              @click="exportFilteredEmails" 
+              :icon="Download"
+              :disabled="!filterPlatform"
+            >
+              导出邮箱
+            </el-button>
           </div>
         </div>
 
@@ -140,17 +149,6 @@
               </div>
             </template>
           </el-table-column>
-          <el-table-column prop="mail_type" label="邮箱类型" :width="columnWidths.mail_type" resizable>
-            <template #default="scope">
-              <el-tag
-                :type="getMailTypeColor(scope.row.mail_type || 'outlook')"
-                effect="plain"
-                class="mail-type-tag"
-              >
-                {{ getMailTypeName(scope.row.mail_type || 'outlook') }}
-              </el-tag>
-            </template>
-          </el-table-column>
           <el-table-column prop="password" label="密码" :width="columnWidths.password" resizable>
             <template #default="scope">
               <div class="password-field flex-between">
@@ -164,35 +162,6 @@
                   class="password-toggle-btn"
                 />
               </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="配置信息" :width="columnWidths.config" resizable>
-            <template #default="scope">
-              <template v-if="scope.row.mail_type === 'imap'">
-                <div class="server-info">
-                  <div class="server-field">
-                    <strong>服务器:</strong> {{ scope.row.server || 'N/A' }}
-                  </div>
-                  <div class="port-field">
-                    <strong>端口:</strong> {{ scope.row.port || 'N/A' }}
-                  </div>
-                </div>
-              </template>
-              <template v-else-if="scope.row.mail_type === 'gmail'">
-                <div class="config-info">
-                  <div>服务器: imap.gmail.com</div>
-                  <div>端口: 993</div>
-                </div>
-              </template>
-              <template v-else-if="scope.row.mail_type === 'qq'">
-                <div class="config-info">
-                  <div>服务器: imap.qq.com</div>
-                  <div>端口: 993</div>
-                </div>
-              </template>
-              <template v-else>
-                <div class="config-info">标准配置</div>
-              </template>
             </template>
           </el-table-column>
           <el-table-column prop="platforms" label="已注册平台" :width="columnWidths.platforms" resizable>
@@ -229,6 +198,46 @@
                 </el-tooltip>
               </div>
               <span v-else>{{ formatDate(scope.row.last_check_time) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="mail_type" label="邮箱类型" :width="columnWidths.mail_type" resizable>
+            <template #default="scope">
+              <el-tag
+                :type="getMailTypeColor(scope.row.mail_type || 'outlook')"
+                effect="plain"
+                class="mail-type-tag"
+              >
+                {{ getMailTypeName(scope.row.mail_type || 'outlook') }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="配置信息" :width="columnWidths.config" resizable>
+            <template #default="scope">
+              <template v-if="scope.row.mail_type === 'imap'">
+                <div class="server-info">
+                  <div class="server-field">
+                    <strong>服务器:</strong> {{ scope.row.server || 'N/A' }}
+                  </div>
+                  <div class="port-field">
+                    <strong>端口:</strong> {{ scope.row.port || 'N/A' }}
+                  </div>
+                </div>
+              </template>
+              <template v-else-if="scope.row.mail_type === 'gmail'">
+                <div class="config-info">
+                  <div>服务器: imap.gmail.com</div>
+                  <div>端口: 993</div>
+                </div>
+              </template>
+              <template v-else-if="scope.row.mail_type === 'qq'">
+                <div class="config-info">
+                  <div>服务器: imap.qq.com</div>
+                  <div>端口: 993</div>
+                </div>
+              </template>
+              <template v-else>
+                <div class="config-info">标准配置</div>
+              </template>
             </template>
           </el-table-column>
           <el-table-column label="操作" fixed="right" :width="columnWidths.actions" resizable>
@@ -588,32 +597,6 @@
         </template>
       </el-dialog>
 
-      <!-- 批量添加平台标签对话框 -->
-      <el-dialog
-        v-model="batchAddPlatformDialogVisible"
-        title="批量添加平台标签"
-        width="400px"
-      >
-        <p>将为选中的 <strong>{{ selectedEmailsCount }}</strong> 个邮箱添加平台标签</p>
-        <el-form :model="batchPlatformForm" label-width="80px" style="margin-top: 16px;">
-          <el-form-item label="平台名称">
-            <el-autocomplete
-              v-model="batchPlatformForm.name"
-              :fetch-suggestions="queryPlatformSuggestions"
-              placeholder="输入平台名称"
-              clearable
-              style="width: 100%"
-            />
-          </el-form-item>
-        </el-form>
-        <template #footer>
-          <span class="dialog-footer">
-            <el-button @click="batchAddPlatformDialogVisible = false">取消</el-button>
-            <el-button type="primary" @click="confirmBatchAddPlatform" :loading="addingPlatform">确定</el-button>
-          </span>
-        </template>
-      </el-dialog>
-
       <!-- 纠正平台名称对话框 -->
       <el-dialog
         v-model="correctPlatformDialogVisible"
@@ -698,7 +681,6 @@ import {
   InfoFilled,
   CopyDocument,
   WarningFilled,
-  CollectionTag,
   Edit
 } from '@element-plus/icons-vue'
 import dayjs from 'dayjs'
@@ -773,10 +755,8 @@ const importing = ref(false)
 
 // 平台标签相关状态
 const addPlatformDialogVisible = ref(false)
-const batchAddPlatformDialogVisible = ref(false)
 const currentPlatformEmail = ref(null)
 const platformForm = ref({ name: '' })
-const batchPlatformForm = ref({ name: '' })
 const addingPlatform = ref(false)
 const allPlatforms = ref([])  // 所有已使用的平台列表
 const filterPlatform = ref('')  // 当前筛选的平台
@@ -993,10 +973,12 @@ const selectedEmailsCount = computed(() => emailsStore.selectedEmailsCount)
 
 // 根据平台筛选后的邮箱列表
 const filteredEmails = computed(() => {
+  // 如果没有选择平台，返回全部
   if (!filterPlatform.value) {
     return emails.value
   }
   
+  // 筛选特定平台
   return emails.value.filter(email => {
     const platforms = email.platforms || []
     const hasPlatform = platforms.includes(filterPlatform.value)
@@ -1007,6 +989,11 @@ const filteredEmails = computed(() => {
       return !hasPlatform
     }
   })
+})
+
+// 异常邮箱数量
+const errorEmailCount = computed(() => {
+  return emails.value.filter(email => email.last_error).length
 })
 
 // 方法
@@ -1347,8 +1334,8 @@ const handleGlobalGraphApiChange = async (value) => {
   }
 }
 
-// 导出邮箱
-const exportEmails = async () => {
+// 导出全部邮箱
+const exportAllEmails = async () => {
   try {
     const response = await fetch('/api/emails/export', {
       headers: {
@@ -1365,7 +1352,7 @@ const exportEmails = async () => {
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `emails_export_${new Date().toISOString().slice(0, 10)}.txt`
+    a.download = `emails_all_${new Date().toISOString().slice(0, 10)}.txt`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
@@ -1375,6 +1362,94 @@ const exportEmails = async () => {
   } catch (error) {
     console.error('导出邮箱失败:', error)
     ElMessage.error('导出失败: ' + (error.message || '网络错误'))
+  }
+}
+
+// 导出筛选后的邮箱（只导出邮箱地址，每行一个）
+const exportFilteredEmails = () => {
+  if (!filterPlatform.value) {
+    ElMessage.warning('请先选择平台')
+    return
+  }
+  
+  const emailList = filteredEmails.value.map(e => e.email)
+  if (emailList.length === 0) {
+    ElMessage.warning('没有符合条件的邮箱')
+    return
+  }
+  
+  const content = emailList.join('\n')
+  const blob = new Blob([content], { type: 'text/plain' })
+  const url = window.URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  
+  // 生成文件名：平台名_已注册/未注册_日期.txt
+  const status = filterPlatformMode.value === 'has' ? 'registered' : 'unregistered'
+  const filename = `${filterPlatform.value}_${status}_${new Date().toISOString().slice(0, 10)}.txt`
+  
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  window.URL.revokeObjectURL(url)
+  
+  ElMessage.success(`已导出 ${emailList.length} 个邮箱`)
+}
+
+// 清除异常邮箱
+const clearErrorEmails = async () => {
+  const errorEmails = emails.value.filter(e => e.last_error)
+  if (errorEmails.length === 0) {
+    ElMessage.info('没有异常邮箱')
+    return
+  }
+  
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除 ${errorEmails.length} 个异常邮箱吗？此操作不可恢复！`,
+      '警告',
+      {
+        confirmButtonText: '确定删除',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    
+    const loading = ElLoading.service({ text: '正在删除异常邮箱...' })
+    
+    let successCount = 0
+    let failCount = 0
+    
+    for (const email of errorEmails) {
+      try {
+        const response = await fetch(`/api/emails/${email.id}`, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
+          }
+        })
+        if (response.ok) {
+          successCount++
+        } else {
+          failCount++
+        }
+      } catch {
+        failCount++
+      }
+    }
+    
+    loading.close()
+    
+    if (successCount > 0) {
+      ElMessage.success(`成功删除 ${successCount} 个异常邮箱`)
+      await emailsStore.fetchEmails()
+    }
+    if (failCount > 0) {
+      ElMessage.warning(`${failCount} 个邮箱删除失败`)
+    }
+  } catch {
+    // 用户取消
   }
 }
 
@@ -1771,62 +1846,6 @@ const removePlatform = async (emailId, platformName) => {
   }
 }
 
-// 显示批量添加平台对话框
-const showBatchAddPlatformDialog = () => {
-  if (!hasSelectedEmails.value) {
-    ElMessage.warning('请先选择邮箱')
-    return
-  }
-  batchPlatformForm.value.name = ''
-  batchAddPlatformDialogVisible.value = true
-}
-
-// 确认批量添加平台标签
-const confirmBatchAddPlatform = async () => {
-  if (!batchPlatformForm.value.name.trim()) {
-    ElMessage.warning('请输入平台名称')
-    return
-  }
-  
-  const emailIds = Array.isArray(emailsStore.selectedEmails) ? [...emailsStore.selectedEmails] : []
-  if (emailIds.length === 0) {
-    ElMessage.warning('没有选中有效的邮箱')
-    return
-  }
-  
-  addingPlatform.value = true
-  try {
-    const response = await fetch('/api/emails/batch_add_platform', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${localStorage.getItem('token')}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        email_ids: emailIds,
-        platform_name: batchPlatformForm.value.name.trim()
-      })
-    })
-    
-    if (response.ok) {
-      const data = await response.json()
-      ElMessage.success(data.message || '添加成功')
-      batchAddPlatformDialogVisible.value = false
-      // 刷新邮箱列表
-      await emailsStore.fetchEmails()
-      await loadAllPlatforms()
-    } else {
-      const data = await response.json()
-      ElMessage.error(data.error || '添加失败')
-    }
-  } catch (error) {
-    console.error('批量添加平台标签失败:', error)
-    ElMessage.error('添加失败: ' + error.message)
-  } finally {
-    addingPlatform.value = false
-  }
-}
-
 // 显示纠正平台对话框
 const showCorrectPlatformDialog = (email, platformName) => {
   correctPlatformEmail.value = email
@@ -1962,10 +1981,8 @@ onMounted(() => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 20px;
-  padding: 20px;
-  max-width: 1200px;
-  margin: 0 auto;
+  gap: 16px;
+  padding: 0;
   width: 100%;
 }
 
@@ -2067,7 +2084,10 @@ onMounted(() => {
 }
 
 .email-list-card {
-  margin-bottom: 20px;
+  margin: 0;
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
   transition: all var(--transition-normal);
 }
 
