@@ -83,6 +83,13 @@ const router = createRouter({
       beforeEnter: requireAuth
     },
     {
+      path: '/platform-rules',
+      name: 'platform-rules',
+      component: () => import('@/views/PlatformRulesView.vue'),
+      meta: { requiresAuth: true },
+      beforeEnter: requireAuth
+    },
+    {
       path: '/login',
       name: 'login',
       component: () => import('@/views/auth/LoginView.vue'),

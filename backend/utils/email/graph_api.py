@@ -188,8 +188,18 @@ class GraphAPIMailHandler:
             return []
     
     @staticmethod
-    def get_new_access_token(refresh_token, client_id):
-        """刷新获取新的 access_token"""
+    def get_new_access_token(refresh_token, client_id, return_error=False):
+        """刷新获取新的 access_token
+        
+        Args:
+            refresh_token: 刷新令牌
+            client_id: 客户端 ID
+            return_error: 是否返回错误信息元组 (access_token, error_message)
+        
+        Returns:
+            如果 return_error=False: 返回 access_token 或 None
+            如果 return_error=True: 返回 (access_token, error_message) 元组
+        """
         url = GraphAPIMailHandler.TOKEN_URL
         data = {
             "client_id": client_id,
@@ -203,19 +213,30 @@ class GraphAPIMailHandler:
             result = response.json()
             
             if "error" in result:
-                logger.error(f"获取访问令牌失败: {result.get('error_description', result.get('error'))}")
+                error_msg = result.get('error_description', result.get('error'))
+                logger.error(f"获取访问令牌失败: {error_msg}")
+                if return_error:
+                    return None, error_msg
                 return None
             
             access_token = result.get("access_token")
             if access_token:
                 logger.info("Graph API: 成功获取新的访问令牌")
+                if return_error:
+                    return access_token, None
                 return access_token
             else:
-                logger.error("获取访问令牌失败: 响应中没有 access_token")
+                error_msg = "响应中没有 access_token"
+                logger.error(f"获取访问令牌失败: {error_msg}")
+                if return_error:
+                    return None, error_msg
                 return None
                 
         except Exception as e:
-            logger.error(f"刷新令牌过程中发生异常: {str(e)}")
+            error_msg = str(e)
+            logger.error(f"刷新令牌过程中发生异常: {error_msg}")
+            if return_error:
+                return None, error_msg
             return None
     
     @staticmethod

@@ -62,6 +62,9 @@
           <el-menu-item index="/search">
             <el-icon><Search /></el-icon>邮件搜索
           </el-menu-item>
+          <el-menu-item index="/platform-rules">
+            <el-icon><List /></el-icon>平台规则
+          </el-menu-item>
           <el-menu-item index="/admin/users" v-if="isAdmin">
             <el-icon><UserFilled /></el-icon>用户管理
           </el-menu-item>
@@ -106,7 +109,7 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useStore } from 'vuex'
 import { ElConfigProvider, ElMessage } from 'element-plus'
-import { ArrowDown, Search, Message, HomeFilled, InfoFilled, UserFilled, Setting } from '@element-plus/icons-vue'
+import { ArrowDown, Search, Message, HomeFilled, InfoFilled, UserFilled, Setting, List } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 import zhCn from 'element-plus/dist/locale/zh-cn.mjs'
 import websocket from '@/services/websocket'

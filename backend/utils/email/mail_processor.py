@@ -176,13 +176,15 @@ class MailProcessor:
 class EmailBatchProcessor:
     """批量邮件处理类"""
 
-    def __init__(self, db, max_workers=5):
+    def __init__(self, db, max_workers=3):
         self.db = db
         self.processing_emails = {}
         self.lock = threading.Lock()
-        # 创建两个独立的线程池
+        # 创建两个独立的线程池（降低并发数避免触发限流）
         self.manual_thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
         self.realtime_thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        # 批量检查的请求间隔（秒）
+        self.request_delay = 2
         self.real_time_running = False
         self.real_time_thread = None
 
@@ -250,41 +252,49 @@ class EmailBatchProcessor:
         # 选择对应的线程池
         thread_pool = self.realtime_thread_pool if is_realtime else self.manual_thread_pool
 
-        # 提交任务到线程池
-        futures = []
-        for email_info in emails:
-            if self.is_email_being_processed(email_info['id']):
-                logger.warning(f"邮箱 {email_info['email']} 正在处理中，跳过")
-                continue
+        # 使用队列控制任务提交，避免一次性提交太多任务
+        def submit_with_delay():
+            futures = []
+            for i, email_info in enumerate(emails):
+                if self.is_email_being_processed(email_info['id']):
+                    logger.warning(f"邮箱 {email_info['email']} 正在处理中，跳过")
+                    continue
 
-            # 获取对应的处理器
-            mail_type = email_info.get('mail_type', 'outlook')
-            handler = self.handlers.get(mail_type)
+                # 获取对应的处理器
+                mail_type = email_info.get('mail_type', 'outlook')
+                handler = self.handlers.get(mail_type)
 
-            if not handler:
-                logger.error(f"不支持的邮箱类型: {mail_type}")
-                continue
+                if not handler:
+                    logger.error(f"不支持的邮箱类型: {mail_type}")
+                    continue
 
-            # 如果是全局 Graph API 模式且是 Outlook 邮箱，设置 use_graph_api
-            if use_graph_api and mail_type == 'outlook':
-                email_info = dict(email_info)  # 转换为可修改的字典
-                email_info['use_graph_api'] = 1
-                logger.info(f"邮箱 {email_info['email']} 使用全局 Graph API 设置")
+                # 如果是全局 Graph API 模式且是 Outlook 邮箱，设置 use_graph_api
+                if use_graph_api and mail_type == 'outlook':
+                    email_info = dict(email_info)  # 转换为可修改的字典
+                    email_info['use_graph_api'] = 1
+                    logger.info(f"邮箱 {email_info['email']} 使用全局 Graph API 设置")
 
-            # 标记为正在处理
-            with self.lock:
-                self.processing_emails[email_info['id']] = True
+                # 标记为正在处理
+                with self.lock:
+                    self.processing_emails[email_info['id']] = True
 
-            # 提交任务到线程池
-            future = thread_pool.submit(
-                self._check_email_task,
-                email_info,
-                create_email_progress_callback(email_info['id'])
-            )
-            futures.append(future)
+                # 提交任务到线程池
+                future = thread_pool.submit(
+                    self._check_email_task_with_retry,
+                    email_info,
+                    create_email_progress_callback(email_info['id'])
+                )
+                futures.append(future)
 
-        # 启动监控线程，处理完成的任务
-        threading.Thread(target=self._monitor_futures, args=(futures,), daemon=True).start()
+                # 每提交一个任务后等待一段时间，避免触发限流
+                if i < len(emails) - 1:
+                    time.sleep(self.request_delay)
+
+            # 监控任务完成情况
+            self._monitor_futures(futures)
+
+        # 在后台线程中执行任务提交
+        threading.Thread(target=submit_with_delay, daemon=True).start()
 
         return True
 
@@ -296,6 +306,52 @@ class EmailBatchProcessor:
                 logger.info(f"任务完成: {result}")
             except Exception as e:
                 logger.error(f"任务执行失败: {str(e)}")
+
+    def _check_email_task_with_retry(self, email_info, callback=None, max_retries=3):
+        """带重试机制的邮件检查任务，处理 429 限流"""
+        retry_count = 0
+        base_delay = 30  # 基础等待时间（秒）
+        
+        while retry_count <= max_retries:
+            try:
+                result = self._check_email_task(email_info, callback)
+                
+                # 检查是否是限流错误
+                if result and not result.get('success', False):
+                    error_msg = result.get('message', '')
+                    if '429' in error_msg or 'throttl' in error_msg.lower() or '限流' in error_msg:
+                        retry_count += 1
+                        if retry_count <= max_retries:
+                            wait_time = base_delay * retry_count  # 递增等待时间
+                            logger.warning(f"邮箱 {email_info['email']} 触发限流，等待 {wait_time} 秒后重试 ({retry_count}/{max_retries})")
+                            if callback:
+                                callback(0, f"触发限流，等待 {wait_time} 秒后重试...")
+                            time.sleep(wait_time)
+                            continue
+                
+                return result
+                
+            except Exception as e:
+                error_str = str(e)
+                # 检查是否是限流相关的异常
+                if '429' in error_str or 'throttl' in error_str.lower():
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        wait_time = base_delay * retry_count
+                        logger.warning(f"邮箱 {email_info['email']} 请求异常(可能限流)，等待 {wait_time} 秒后重试 ({retry_count}/{max_retries})")
+                        if callback:
+                            callback(0, f"请求异常，等待 {wait_time} 秒后重试...")
+                        time.sleep(wait_time)
+                        continue
+                
+                # 其他异常直接返回失败
+                logger.error(f"邮箱 {email_info['email']} 检查失败: {error_str}")
+                return {'success': False, 'message': error_str}
+        
+        # 重试次数用尽
+        error_msg = f"重试 {max_retries} 次后仍然失败"
+        logger.error(f"邮箱 {email_info['email']} {error_msg}")
+        return {'success': False, 'message': error_msg}
 
     def _check_email_task(self, email_info, callback=None):
         """检查单个邮箱的邮件"""

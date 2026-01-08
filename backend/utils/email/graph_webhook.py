@@ -119,7 +119,9 @@ class GraphWebhookManager:
         client_id = email_info.get('client_id')
         
         if not refresh_token or not client_id:
-            logger.error(f"邮箱 {email_info['email']} 缺少 OAuth2 认证信息")
+            error_msg = "缺少 OAuth2 认证信息"
+            logger.error(f"邮箱 {email_info['email']} {error_msg}")
+            self.db.update_email_error(email_id, error_msg)
             return None
         
         # 检查是否已有订阅
@@ -129,10 +131,22 @@ class GraphWebhookManager:
             return existing
         
         try:
-            # 获取访问令牌
-            access_token = GraphAPIMailHandler.get_new_access_token(refresh_token, client_id)
+            # 获取访问令牌，同时获取错误信息
+            access_token, error_msg = GraphAPIMailHandler.get_new_access_token(refresh_token, client_id, return_error=True)
             if not access_token:
-                logger.error(f"邮箱 {email_info['email']} 获取访问令牌失败")
+                # 简化错误信息，提取关键部分
+                if error_msg:
+                    if 'service abuse' in error_msg.lower() or 'AADSTS70000' in error_msg:
+                        error_msg = "账号被限制(abuse mode)"
+                    elif 'invalid_grant' in error_msg.lower():
+                        error_msg = "令牌已失效"
+                    elif len(error_msg) > 100:
+                        error_msg = error_msg[:100] + '...'
+                else:
+                    error_msg = "获取访问令牌失败"
+                
+                logger.error(f"邮箱 {email_info['email']} {error_msg}")
+                self.db.update_email_error(email_id, error_msg)
                 return None
             
             # 计算过期时间（使用最大有效期）
@@ -167,6 +181,9 @@ class GraphWebhookManager:
                     resource=payload['resource'],
                     expiration_time=expiration_time.strftime("%Y-%m-%d %H:%M:%S")
                 )
+                
+                # 清除之前的错误状态
+                self.db.clear_email_error(email_id)
                 
                 logger.info(f"邮箱 {email_info['email']} 创建订阅成功: {subscription_id}")
                 return {

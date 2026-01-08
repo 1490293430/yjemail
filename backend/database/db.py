@@ -170,6 +170,49 @@ class Database:
                 )
             ''')
 
+            # 创建平台标签表（记录邮箱注册了哪些平台）
+            self.conn.execute('''
+                CREATE TABLE IF NOT EXISTS email_platforms (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email_id INTEGER NOT NULL,
+                    platform_name TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (email_id) REFERENCES emails (id) ON DELETE CASCADE,
+                    UNIQUE (email_id, platform_name)
+                )
+            ''')
+
+            # 创建平台识别规则表
+            self.conn.execute('''
+                CREATE TABLE IF NOT EXISTS platform_rules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    platform_name TEXT NOT NULL,
+                    sender_pattern TEXT,
+                    subject_pattern TEXT,
+                    content_pattern TEXT,
+                    is_enabled INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+                )
+            ''')
+
+            # 创建平台名称纠正映射表（用于纠正自动识别错误）
+            self.conn.execute('''
+                CREATE TABLE IF NOT EXISTS platform_corrections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    sender_domain TEXT NOT NULL,
+                    wrong_name TEXT,
+                    correct_name TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+                    UNIQUE (user_id, sender_domain)
+                )
+            ''')
+
             # 检查并添加新字段
             self._check_and_add_column('emails', 'enable_realtime_check', 'INTEGER DEFAULT 0')
             self._check_and_add_column('emails', 'use_graph_api', 'INTEGER DEFAULT 0')
@@ -188,13 +231,30 @@ class Database:
             traceback.print_exc()
 
     def _migrate_columns(self):
-        """迁移检查：为已存在的数据库添加新字段"""
+        """迁移检查：为已存在的数据库添加新字段和新表"""
         try:
             self._check_and_add_column('emails', 'enable_realtime_check', 'INTEGER DEFAULT 0')
             self._check_and_add_column('emails', 'use_graph_api', 'INTEGER DEFAULT 0')
             self._check_and_add_column('emails', 'last_error', 'TEXT')
             self._check_and_add_column('emails', 'error_time', 'TIMESTAMP')
             self._check_and_add_column('users', 'password_hash', 'TEXT')
+            
+            # 创建平台纠正映射表（如果不存在）
+            self.conn.execute('''
+                CREATE TABLE IF NOT EXISTS platform_corrections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    sender_domain TEXT NOT NULL,
+                    wrong_name TEXT,
+                    correct_name TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+                    UNIQUE (user_id, sender_domain)
+                )
+            ''')
+            self.conn.commit()
+            
             logger.info("数据库字段迁移检查完成")
         except Exception as e:
             logger.error(f"数据库字段迁移失败: {str(e)}")
@@ -718,21 +778,165 @@ class Database:
                 return False, None  # 邮件已存在，返回False表示没有添加新记录
 
             # 如果content是字典类型，将其转换为JSON字符串
+            content_str = content
             if isinstance(content, dict):
                 import json
-                content = json.dumps(content, ensure_ascii=False)
+                content_str = json.dumps(content, ensure_ascii=False)
 
             # 邮件不存在，添加新记录
             cursor = self.conn.execute(
                 "INSERT INTO mail_records (email_id, subject, sender, received_time, content, folder, has_attachments) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (email_id, subject, sender, received_time, content, folder, has_attachments)
+                (email_id, subject, sender, received_time, content_str, folder, has_attachments)
             )
             mail_id = cursor.lastrowid
             self.conn.commit()
+            
+            # 自动匹配平台规则并标记
+            try:
+                self._auto_tag_platform(email_id, sender, subject, content if isinstance(content, str) else content_str)
+            except Exception as e:
+                logger.error(f"自动标记平台失败: {str(e)}")
+            
             return True, mail_id  # 添加了新记录，返回True和邮件ID
         except Exception as e:
             logger.error(f"添加邮件记录失败: {str(e)}")
             return False, None
+    
+    def _auto_tag_platform(self, email_id, sender, subject, content):
+        """根据邮件内容自动标记平台"""
+        try:
+            # 获取邮箱所属用户
+            cursor = self.conn.execute("SELECT user_id FROM emails WHERE id = ?", (email_id,))
+            result = cursor.fetchone()
+            if not result:
+                return
+            
+            user_id = result['user_id']
+            
+            # 0. 先检查是否有纠正映射（优先级最高）
+            sender_domain = self._extract_sender_domain(sender)
+            if sender_domain:
+                corrected_name = self.get_platform_correction(user_id, sender_domain)
+                if corrected_name:
+                    self.add_email_platform(email_id, corrected_name)
+                    logger.info(f"使用纠正映射标记平台: email_id={email_id}, platform={corrected_name}")
+                    return
+            
+            # 1. 尝试用户自定义规则匹配
+            matched_platforms = self.match_platform_rules(user_id, sender, subject, content)
+            
+            # 2. 如果没有匹配到，尝试通用注册邮件识别
+            if not matched_platforms:
+                platform = self._detect_registration_email(sender, subject, content)
+                if platform:
+                    matched_platforms = [platform]
+            
+            # 添加平台标签
+            for platform in matched_platforms:
+                self.add_email_platform(email_id, platform)
+                logger.info(f"自动标记平台: email_id={email_id}, platform={platform}")
+        except Exception as e:
+            logger.error(f"自动标记平台失败: {str(e)}")
+    
+    def _detect_registration_email(self, sender: str, subject: str, content: str) -> Optional[str]:
+        """
+        通用注册邮件识别 - 自动从邮件中提取平台名称
+        识别注册成功、欢迎、验证等类型的邮件
+        """
+        import re
+        
+        # 注册相关关键词（中英文）
+        registration_keywords = [
+            # 中文
+            r'注册成功', r'账户已.*注册', r'账号已.*创建', r'欢迎.*注册', r'注册.*完成',
+            r'验证成功', r'激活成功', r'开通成功', r'创建.*成功',
+            # 英文
+            r'registration\s*(successful|complete|confirmed)',
+            r'account\s*(created|activated|verified)',
+            r'welcome\s*to', r'successfully\s*registered',
+            r'sign\s*up\s*(successful|complete)', r'verify.*email',
+            r'confirm.*registration', r'activation\s*complete'
+        ]
+        
+        # 检查主题或内容是否包含注册关键词
+        text_to_check = f"{subject or ''} {content or ''}"
+        is_registration_email = False
+        
+        for keyword in registration_keywords:
+            if re.search(keyword, text_to_check, re.IGNORECASE):
+                is_registration_email = True
+                break
+        
+        if not is_registration_email:
+            return None
+        
+        # 从发件人提取平台名称
+        platform = self._extract_platform_from_sender(sender)
+        if platform:
+            return platform
+        
+        # 从主题提取平台名称
+        platform = self._extract_platform_from_subject(subject)
+        if platform:
+            return platform
+        
+        return None
+    
+    def _extract_platform_from_sender(self, sender: str) -> Optional[str]:
+        """从发件人地址提取平台名称"""
+        import re
+        
+        if not sender:
+            return None
+        
+        # 提取发件人名称部分，如 "MoreLogin <noreply@morelogin.com>" -> "MoreLogin"
+        name_match = re.match(r'^([^<]+)<', sender)
+        if name_match:
+            name = name_match.group(1).strip()
+            # 过滤掉通用名称
+            generic_names = ['noreply', 'no-reply', 'support', 'info', 'admin', 'service', 'team', 'notification', 'notifications', 'mail', 'email']
+            if name.lower() not in generic_names and len(name) >= 2:
+                return name
+        
+        # 从邮箱域名提取，如 "noreply@morelogin.com" -> "morelogin"
+        email_match = re.search(r'@([a-zA-Z0-9-]+)\.', sender)
+        if email_match:
+            domain = email_match.group(1).lower()
+            # 过滤掉通用域名
+            generic_domains = ['gmail', 'outlook', 'hotmail', 'yahoo', 'qq', '163', '126', 'mail', 'email', 'service', 'noreply']
+            if domain not in generic_domains and len(domain) >= 2:
+                # 首字母大写
+                return domain.capitalize()
+        
+        return None
+    
+    def _extract_platform_from_subject(self, subject: str) -> Optional[str]:
+        """从邮件主题提取平台名称"""
+        import re
+        
+        if not subject:
+            return None
+        
+        # 匹配 【平台名】 或 [平台名] 格式
+        bracket_match = re.search(r'[【\[]([^】\]]+)[】\]]', subject)
+        if bracket_match:
+            platform = bracket_match.group(1).strip()
+            if len(platform) >= 2 and len(platform) <= 30:
+                return platform
+        
+        # 匹配 "Welcome to 平台名" 格式
+        welcome_match = re.search(r'welcome\s+to\s+([A-Za-z0-9]+)', subject, re.IGNORECASE)
+        if welcome_match:
+            return welcome_match.group(1)
+        
+        # 匹配 "平台名 - 注册成功" 格式
+        dash_match = re.match(r'^([A-Za-z0-9\u4e00-\u9fa5]+)\s*[-–—]\s*', subject)
+        if dash_match:
+            platform = dash_match.group(1).strip()
+            if len(platform) >= 2 and len(platform) <= 20:
+                return platform
+        
+        return None
 
     def get_mail_count_by_email_id(self, email_id):
         """获取指定邮箱的邮件数量"""
@@ -1308,3 +1512,406 @@ class Database:
         except Exception as e:
             logger.error(f"获取最新邮件失败: {str(e)}")
             return []
+
+    # ==================== 邮箱平台标签相关方法 ====================
+    
+    def add_email_platform(self, email_id: int, platform_name: str) -> bool:
+        """为邮箱添加平台标签"""
+        try:
+            self.conn.execute("""
+                INSERT OR IGNORE INTO email_platforms (email_id, platform_name)
+                VALUES (?, ?)
+            """, (email_id, platform_name.strip()))
+            self.conn.commit()
+            logger.info(f"添加平台标签成功: email_id={email_id}, platform={platform_name}")
+            return True
+        except Exception as e:
+            logger.error(f"添加平台标签失败: {str(e)}")
+            return False
+    
+    def remove_email_platform(self, email_id: int, platform_name: str) -> bool:
+        """移除邮箱的平台标签"""
+        try:
+            self.conn.execute("""
+                DELETE FROM email_platforms WHERE email_id = ? AND platform_name = ?
+            """, (email_id, platform_name.strip()))
+            self.conn.commit()
+            logger.info(f"移除平台标签成功: email_id={email_id}, platform={platform_name}")
+            return True
+        except Exception as e:
+            logger.error(f"移除平台标签失败: {str(e)}")
+            return False
+    
+    def get_email_platforms(self, email_id: int) -> List[str]:
+        """获取邮箱的所有平台标签"""
+        try:
+            cursor = self.conn.execute("""
+                SELECT platform_name FROM email_platforms WHERE email_id = ?
+                ORDER BY created_at
+            """, (email_id,))
+            return [row['platform_name'] for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"获取平台标签失败: {str(e)}")
+            return []
+    
+    def get_all_platforms(self, user_id: int = None) -> List[Dict]:
+        """获取所有已使用的平台名称及数量"""
+        try:
+            if user_id:
+                cursor = self.conn.execute("""
+                    SELECT ep.platform_name, COUNT(*) as count
+                    FROM email_platforms ep
+                    JOIN emails e ON ep.email_id = e.id
+                    WHERE e.user_id = ?
+                    GROUP BY ep.platform_name
+                    ORDER BY count DESC
+                """, (user_id,))
+            else:
+                cursor = self.conn.execute("""
+                    SELECT platform_name, COUNT(*) as count
+                    FROM email_platforms
+                    GROUP BY platform_name
+                    ORDER BY count DESC
+                """)
+            return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"获取所有平台失败: {str(e)}")
+            return []
+    
+    def get_emails_by_platform(self, platform_name: str, user_id: int = None) -> List[Dict]:
+        """根据平台名称获取邮箱列表"""
+        try:
+            if user_id:
+                cursor = self.conn.execute("""
+                    SELECT e.* FROM emails e
+                    JOIN email_platforms ep ON e.id = ep.email_id
+                    WHERE ep.platform_name = ? AND e.user_id = ?
+                    ORDER BY e.created_at DESC
+                """, (platform_name, user_id))
+            else:
+                cursor = self.conn.execute("""
+                    SELECT e.* FROM emails e
+                    JOIN email_platforms ep ON e.id = ep.email_id
+                    WHERE ep.platform_name = ?
+                    ORDER BY e.created_at DESC
+                """, (platform_name,))
+            
+            emails = []
+            for row in cursor.fetchall():
+                email_dict = dict(row)
+                if email_dict.get('password'):
+                    email_dict['password'] = decrypt(email_dict['password'])
+                emails.append(email_dict)
+            return emails
+        except Exception as e:
+            logger.error(f"根据平台获取邮箱失败: {str(e)}")
+            return []
+    
+    def batch_add_email_platforms(self, email_ids: List[int], platform_name: str) -> int:
+        """批量为邮箱添加平台标签"""
+        try:
+            count = 0
+            for email_id in email_ids:
+                try:
+                    self.conn.execute("""
+                        INSERT OR IGNORE INTO email_platforms (email_id, platform_name)
+                        VALUES (?, ?)
+                    """, (email_id, platform_name.strip()))
+                    count += 1
+                except:
+                    pass
+            self.conn.commit()
+            logger.info(f"批量添加平台标签成功: {count} 个邮箱, platform={platform_name}")
+            return count
+        except Exception as e:
+            logger.error(f"批量添加平台标签失败: {str(e)}")
+            return 0
+
+    # ==================== 平台识别规则相关方法 ====================
+    
+    def add_platform_rule(self, user_id: int, platform_name: str, sender_pattern: str = None, 
+                          subject_pattern: str = None, content_pattern: str = None) -> Optional[int]:
+        """添加平台识别规则"""
+        try:
+            cursor = self.conn.execute("""
+                INSERT INTO platform_rules (user_id, platform_name, sender_pattern, subject_pattern, content_pattern)
+                VALUES (?, ?, ?, ?, ?)
+            """, (user_id, platform_name.strip(), sender_pattern, subject_pattern, content_pattern))
+            self.conn.commit()
+            rule_id = cursor.lastrowid
+            logger.info(f"添加平台规则成功: id={rule_id}, platform={platform_name}")
+            return rule_id
+        except Exception as e:
+            logger.error(f"添加平台规则失败: {str(e)}")
+            return None
+    
+    def update_platform_rule(self, rule_id: int, user_id: int, **kwargs) -> bool:
+        """更新平台识别规则"""
+        try:
+            allowed_fields = ['platform_name', 'sender_pattern', 'subject_pattern', 'content_pattern', 'is_enabled']
+            update_fields = []
+            params = []
+            
+            for key, value in kwargs.items():
+                if key in allowed_fields:
+                    update_fields.append(f"{key} = ?")
+                    params.append(value)
+            
+            if not update_fields:
+                return False
+            
+            update_fields.append("updated_at = CURRENT_TIMESTAMP")
+            params.extend([rule_id, user_id])
+            
+            self.conn.execute(f"""
+                UPDATE platform_rules SET {', '.join(update_fields)}
+                WHERE id = ? AND user_id = ?
+            """, params)
+            self.conn.commit()
+            logger.info(f"更新平台规则成功: id={rule_id}")
+            return True
+        except Exception as e:
+            logger.error(f"更新平台规则失败: {str(e)}")
+            return False
+    
+    def delete_platform_rule(self, rule_id: int, user_id: int) -> bool:
+        """删除平台识别规则"""
+        try:
+            self.conn.execute("""
+                DELETE FROM platform_rules WHERE id = ? AND user_id = ?
+            """, (rule_id, user_id))
+            self.conn.commit()
+            logger.info(f"删除平台规则成功: id={rule_id}")
+            return True
+        except Exception as e:
+            logger.error(f"删除平台规则失败: {str(e)}")
+            return False
+    
+    def get_platform_rules(self, user_id: int) -> List[Dict]:
+        """获取用户的所有平台识别规则"""
+        try:
+            cursor = self.conn.execute("""
+                SELECT * FROM platform_rules WHERE user_id = ?
+                ORDER BY platform_name
+            """, (user_id,))
+            return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"获取平台规则失败: {str(e)}")
+            return []
+    
+    def get_enabled_platform_rules(self, user_id: int) -> List[Dict]:
+        """获取用户启用的平台识别规则"""
+        try:
+            cursor = self.conn.execute("""
+                SELECT * FROM platform_rules WHERE user_id = ? AND is_enabled = 1
+                ORDER BY platform_name
+            """, (user_id,))
+            return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"获取启用的平台规则失败: {str(e)}")
+            return []
+    
+    def get_all_enabled_platform_rules(self) -> List[Dict]:
+        """获取所有用户启用的平台识别规则（用于邮件处理）"""
+        try:
+            cursor = self.conn.execute("""
+                SELECT pr.*, e.user_id as email_user_id
+                FROM platform_rules pr
+                JOIN users u ON pr.user_id = u.id
+                WHERE pr.is_enabled = 1
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"获取所有启用的平台规则失败: {str(e)}")
+            return []
+    
+    def match_platform_rules(self, user_id: int, sender: str, subject: str, content: str) -> List[str]:
+        """匹配邮件内容，返回匹配的平台名称列表"""
+        import re
+        matched_platforms = []
+        
+        try:
+            rules = self.get_enabled_platform_rules(user_id)
+            
+            for rule in rules:
+                matched = False
+                
+                # 检查发件人匹配
+                if rule['sender_pattern']:
+                    try:
+                        if re.search(rule['sender_pattern'], sender or '', re.IGNORECASE):
+                            matched = True
+                    except re.error:
+                        # 如果正则表达式无效，尝试简单包含匹配
+                        if rule['sender_pattern'].lower() in (sender or '').lower():
+                            matched = True
+                
+                # 检查主题匹配
+                if rule['subject_pattern'] and not matched:
+                    try:
+                        if re.search(rule['subject_pattern'], subject or '', re.IGNORECASE):
+                            matched = True
+                    except re.error:
+                        if rule['subject_pattern'].lower() in (subject or '').lower():
+                            matched = True
+                
+                # 检查内容匹配
+                if rule['content_pattern'] and not matched:
+                    try:
+                        if re.search(rule['content_pattern'], content or '', re.IGNORECASE):
+                            matched = True
+                    except re.error:
+                        if rule['content_pattern'].lower() in (content or '').lower():
+                            matched = True
+                
+                if matched and rule['platform_name'] not in matched_platforms:
+                    matched_platforms.append(rule['platform_name'])
+            
+            return matched_platforms
+        except Exception as e:
+            logger.error(f"匹配平台规则失败: {str(e)}")
+            return []
+
+    # ==================== 平台名称纠正相关方法 ====================
+    
+    def add_platform_correction(self, user_id: int, sender_domain: str, correct_name: str, wrong_name: str = None) -> bool:
+        """添加或更新平台名称纠正映射"""
+        try:
+            # 使用 INSERT OR REPLACE 来处理重复
+            self.conn.execute("""
+                INSERT OR REPLACE INTO platform_corrections (user_id, sender_domain, correct_name, wrong_name, updated_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, (user_id, sender_domain.lower(), correct_name.strip(), wrong_name))
+            self.conn.commit()
+            logger.info(f"添加平台纠正映射: {sender_domain} -> {correct_name}")
+            return True
+        except Exception as e:
+            logger.error(f"添加平台纠正映射失败: {str(e)}")
+            return False
+    
+    def get_platform_correction(self, user_id: int, sender_domain: str) -> Optional[str]:
+        """根据发件人域名获取纠正后的平台名称"""
+        try:
+            cursor = self.conn.execute("""
+                SELECT correct_name FROM platform_corrections 
+                WHERE user_id = ? AND sender_domain = ?
+            """, (user_id, sender_domain.lower()))
+            result = cursor.fetchone()
+            return result['correct_name'] if result else None
+        except Exception as e:
+            logger.error(f"获取平台纠正映射失败: {str(e)}")
+            return None
+    
+    def get_all_platform_corrections(self, user_id: int) -> List[Dict]:
+        """获取用户的所有平台纠正映射"""
+        try:
+            cursor = self.conn.execute("""
+                SELECT * FROM platform_corrections WHERE user_id = ?
+                ORDER BY correct_name
+            """, (user_id,))
+            return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"获取平台纠正映射列表失败: {str(e)}")
+            return []
+    
+    def delete_platform_correction(self, correction_id: int, user_id: int) -> bool:
+        """删除平台纠正映射"""
+        try:
+            self.conn.execute("""
+                DELETE FROM platform_corrections WHERE id = ? AND user_id = ?
+            """, (correction_id, user_id))
+            self.conn.commit()
+            logger.info(f"删除平台纠正映射: id={correction_id}")
+            return True
+        except Exception as e:
+            logger.error(f"删除平台纠正映射失败: {str(e)}")
+            return False
+    
+    def correct_platform_name(self, email_id: int, old_name: str, new_name: str, sender: str = None) -> bool:
+        """
+        纠正平台名称：
+        1. 更新邮箱的平台标签
+        2. 如果提供了发件人，保存纠正映射供下次使用
+        """
+        try:
+            # 获取邮箱所属用户
+            cursor = self.conn.execute("SELECT user_id FROM emails WHERE id = ?", (email_id,))
+            result = cursor.fetchone()
+            if not result:
+                return False
+            
+            user_id = result['user_id']
+            
+            # 移除旧标签
+            if old_name:
+                self.remove_email_platform(email_id, old_name)
+            
+            # 添加新标签
+            self.add_email_platform(email_id, new_name)
+            
+            # 如果提供了发件人，保存纠正映射
+            if sender:
+                domain = self._extract_sender_domain(sender)
+                if domain:
+                    self.add_platform_correction(user_id, domain, new_name, old_name)
+            
+            logger.info(f"纠正平台名称: email_id={email_id}, {old_name} -> {new_name}")
+            return True
+        except Exception as e:
+            logger.error(f"纠正平台名称失败: {str(e)}")
+            return False
+    
+    def _extract_sender_domain(self, sender: str) -> Optional[str]:
+        """从发件人地址提取域名"""
+        import re
+        if not sender:
+            return None
+        
+        # 匹配邮箱域名
+        match = re.search(r'@([a-zA-Z0-9.-]+)', sender)
+        if match:
+            return match.group(1).lower()
+        return None
+    
+    def rename_platform(self, user_id: int, old_name: str, new_name: str) -> int:
+        """
+        重命名平台：批量更新所有使用该平台名的邮箱
+        返回更新的数量
+        """
+        try:
+            # 获取用户所有使用该平台名的邮箱
+            cursor = self.conn.execute("""
+                SELECT ep.email_id FROM email_platforms ep
+                JOIN emails e ON ep.email_id = e.id
+                WHERE ep.platform_name = ? AND e.user_id = ?
+            """, (old_name, user_id))
+            
+            email_ids = [row['email_id'] for row in cursor.fetchall()]
+            
+            if not email_ids:
+                return 0
+            
+            # 批量更新
+            count = 0
+            for email_id in email_ids:
+                try:
+                    # 删除旧标签
+                    self.conn.execute("""
+                        DELETE FROM email_platforms WHERE email_id = ? AND platform_name = ?
+                    """, (email_id, old_name))
+                    
+                    # 添加新标签（如果不存在）
+                    self.conn.execute("""
+                        INSERT OR IGNORE INTO email_platforms (email_id, platform_name)
+                        VALUES (?, ?)
+                    """, (email_id, new_name))
+                    count += 1
+                except:
+                    pass
+            
+            self.conn.commit()
+            logger.info(f"重命名平台: {old_name} -> {new_name}, 更新 {count} 个邮箱")
+            return count
+        except Exception as e:
+            logger.error(f"重命名平台失败: {str(e)}")
+            return 0

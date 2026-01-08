@@ -11,6 +11,17 @@
                   <span style="font-size: 13px; color: #909399;">
                     邮箱: {{ outlookEmailCount }} | 订阅: {{ subscriptionCount }}
                   </span>
+                  <el-button
+                    v-if="outlookEmailCount > subscriptionCount"
+                    type="primary"
+                    size="small"
+                    link
+                    @click="createMissingSubscriptions"
+                    :loading="creatingSubscriptions"
+                    style="margin-left: 4px;"
+                  >
+                    补订阅
+                  </el-button>
                   <span style="font-size: 14px; color: #606266; margin-left: 8px;">Graph API</span>
                   <el-switch
                     v-model="globalUseGraphApi"
@@ -52,11 +63,52 @@
           >
             批量收信
           </el-button>
+          <el-button
+            type="success"
+            :disabled="!hasSelectedEmails"
+            @click="showBatchAddPlatformDialog"
+            :icon="CollectionTag"
+            class="hover-scale"
+          >
+            批量标记平台
+          </el-button>
+          <el-button
+            type="warning"
+            @click="showRenamePlatformDialog"
+            :icon="Edit"
+            class="hover-scale"
+            v-if="allPlatforms.length > 0"
+          >
+            重命名平台
+          </el-button>
+          
+          <!-- 平台筛选 -->
+          <div class="platform-filter flex gap-sm" style="margin-left: auto; align-items: center;">
+            <span style="font-size: 14px; color: #606266;">筛选平台:</span>
+            <el-select
+              v-model="filterPlatform"
+              placeholder="全部"
+              clearable
+              style="width: 160px;"
+              @change="handlePlatformFilterChange"
+            >
+              <el-option
+                v-for="p in allPlatforms"
+                :key="p.platform_name"
+                :label="`${p.platform_name} (${p.count})`"
+                :value="p.platform_name"
+              />
+            </el-select>
+            <el-radio-group v-model="filterPlatformMode" size="small" @change="handlePlatformFilterChange">
+              <el-radio-button label="has">已注册</el-radio-button>
+              <el-radio-button label="not">未注册</el-radio-button>
+            </el-radio-group>
+          </div>
         </div>
 
         <el-table
           v-loading="loading"
-          :data="emails"
+          :data="filteredEmails"
           @selection-change="handleSelectionChange"
           @header-dragend="handleHeaderDragend"
           style="width: 100%"
@@ -73,6 +125,9 @@
           <el-table-column prop="email" label="邮箱地址" :width="columnWidths.email" resizable>
             <template #default="scope">
               <div class="email-cell">
+                <el-tooltip v-if="scope.row.last_error" :content="scope.row.last_error" placement="top">
+                  <el-icon class="error-icon"><WarningFilled /></el-icon>
+                </el-tooltip>
                 <span class="email-text" :class="{ 'email-error': scope.row.last_error }">{{ scope.row.email }}</span>
                 <el-button
                   type="primary"
@@ -138,6 +193,32 @@
               <template v-else>
                 <div class="config-info">标准配置</div>
               </template>
+            </template>
+          </el-table-column>
+          <el-table-column prop="platforms" label="已注册平台" :width="columnWidths.platforms" resizable>
+            <template #default="scope">
+              <div class="platforms-cell">
+                <el-tag
+                  v-for="platform in (scope.row.platforms || [])"
+                  :key="platform"
+                  size="small"
+                  closable
+                  @close="removePlatform(scope.row.id, platform)"
+                  @click="showCorrectPlatformDialog(scope.row, platform)"
+                  class="platform-tag clickable"
+                  title="点击纠正平台名称"
+                >
+                  {{ platform }}
+                </el-tag>
+                <el-button
+                  type="primary"
+                  link
+                  size="small"
+                  :icon="Plus"
+                  @click.stop="showAddPlatformDialog(scope.row)"
+                  class="add-platform-btn"
+                />
+              </div>
             </template>
           </el-table-column>
           <el-table-column prop="last_check_time" label="最后检查时间" :width="columnWidths.last_check_time" resizable>
@@ -477,6 +558,126 @@
           </span>
         </template>
       </el-dialog>
+
+      <!-- 添加平台标签对话框 -->
+      <el-dialog
+        v-model="addPlatformDialogVisible"
+        title="添加平台标签"
+        width="400px"
+        @close="resetPlatformForm"
+      >
+        <div v-if="currentPlatformEmail" class="platform-dialog-header">
+          <p>邮箱: <strong>{{ currentPlatformEmail.email }}</strong></p>
+        </div>
+        <el-form :model="platformForm" label-width="80px">
+          <el-form-item label="平台名称">
+            <el-autocomplete
+              v-model="platformForm.name"
+              :fetch-suggestions="queryPlatformSuggestions"
+              placeholder="输入平台名称，如: MoreLogin"
+              clearable
+              style="width: 100%"
+            />
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <span class="dialog-footer">
+            <el-button @click="addPlatformDialogVisible = false">取消</el-button>
+            <el-button type="primary" @click="confirmAddPlatform" :loading="addingPlatform">确定</el-button>
+          </span>
+        </template>
+      </el-dialog>
+
+      <!-- 批量添加平台标签对话框 -->
+      <el-dialog
+        v-model="batchAddPlatformDialogVisible"
+        title="批量添加平台标签"
+        width="400px"
+      >
+        <p>将为选中的 <strong>{{ selectedEmailsCount }}</strong> 个邮箱添加平台标签</p>
+        <el-form :model="batchPlatformForm" label-width="80px" style="margin-top: 16px;">
+          <el-form-item label="平台名称">
+            <el-autocomplete
+              v-model="batchPlatformForm.name"
+              :fetch-suggestions="queryPlatformSuggestions"
+              placeholder="输入平台名称"
+              clearable
+              style="width: 100%"
+            />
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <span class="dialog-footer">
+            <el-button @click="batchAddPlatformDialogVisible = false">取消</el-button>
+            <el-button type="primary" @click="confirmBatchAddPlatform" :loading="addingPlatform">确定</el-button>
+          </span>
+        </template>
+      </el-dialog>
+
+      <!-- 纠正平台名称对话框 -->
+      <el-dialog
+        v-model="correctPlatformDialogVisible"
+        title="纠正平台名称"
+        width="450px"
+        @close="resetCorrectPlatformForm"
+      >
+        <div v-if="correctPlatformEmail" class="platform-dialog-header">
+          <p>邮箱: <strong>{{ correctPlatformEmail.email }}</strong></p>
+          <p>当前平台: <el-tag size="small">{{ correctPlatformForm.oldName }}</el-tag></p>
+        </div>
+        <el-form :model="correctPlatformForm" label-width="100px" style="margin-top: 16px;">
+          <el-form-item label="正确名称">
+            <el-autocomplete
+              v-model="correctPlatformForm.newName"
+              :fetch-suggestions="queryPlatformSuggestions"
+              placeholder="输入正确的平台名称"
+              clearable
+              style="width: 100%"
+            />
+          </el-form-item>
+          <el-form-item label="记住纠正">
+            <el-checkbox v-model="correctPlatformForm.remember">
+              下次自动使用此名称（基于发件人域名）
+            </el-checkbox>
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <span class="dialog-footer">
+            <el-button @click="correctPlatformDialogVisible = false">取消</el-button>
+            <el-button type="primary" @click="confirmCorrectPlatform" :loading="correctingPlatform">确定</el-button>
+          </span>
+        </template>
+      </el-dialog>
+
+      <!-- 重命名平台对话框 -->
+      <el-dialog
+        v-model="renamePlatformDialogVisible"
+        title="重命名平台"
+        width="450px"
+      >
+        <p style="margin-bottom: 16px; color: #909399;">批量修改所有使用该平台名的邮箱</p>
+        <el-form :model="renamePlatformForm" label-width="100px">
+          <el-form-item label="原平台名">
+            <el-select v-model="renamePlatformForm.oldName" placeholder="选择要重命名的平台" style="width: 100%">
+              <el-option
+                v-for="p in allPlatforms"
+                :key="p.platform_name"
+                :label="`${p.platform_name} (${p.count}个邮箱)`"
+                :value="p.platform_name"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="新平台名">
+            <el-input v-model="renamePlatformForm.newName" placeholder="输入新的平台名称" />
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <span class="dialog-footer">
+            <el-button @click="renamePlatformDialogVisible = false">取消</el-button>
+            <el-button type="primary" @click="confirmRenamePlatform" :loading="renamingPlatform">确定</el-button>
+          </span>
+        </template>
+      </el-dialog>
     </div>
   </div>
 </template>
@@ -495,7 +696,10 @@ import {
   View,
   Hide,
   InfoFilled,
-  CopyDocument
+  CopyDocument,
+  WarningFilled,
+  CollectionTag,
+  Edit
 } from '@element-plus/icons-vue'
 import dayjs from 'dayjs'
 import DOMPurify from 'dompurify'
@@ -512,6 +716,7 @@ const defaultColumnWidths = {
   mail_type: 120,
   password: 150,
   config: 200,
+  platforms: 200,
   last_check_time: 180,
   actions: 360
 }
@@ -538,6 +743,7 @@ const handleHeaderDragend = (newWidth, oldWidth, column) => {
     '邮箱类型': 'mail_type',
     '密码': 'password',
     '配置信息': 'config',
+    '已注册平台': 'platforms',
     '最后检查时间': 'last_check_time',
     '操作': 'actions'
   }
@@ -565,10 +771,33 @@ const mailListDialogVisible = ref(false)
 const addingEmail = ref(false)
 const importing = ref(false)
 
+// 平台标签相关状态
+const addPlatformDialogVisible = ref(false)
+const batchAddPlatformDialogVisible = ref(false)
+const currentPlatformEmail = ref(null)
+const platformForm = ref({ name: '' })
+const batchPlatformForm = ref({ name: '' })
+const addingPlatform = ref(false)
+const allPlatforms = ref([])  // 所有已使用的平台列表
+const filterPlatform = ref('')  // 当前筛选的平台
+const filterPlatformMode = ref('has')  // 筛选模式: has=已注册, not=未注册
+
+// 纠正平台相关状态
+const correctPlatformDialogVisible = ref(false)
+const correctPlatformEmail = ref(null)
+const correctPlatformForm = ref({ oldName: '', newName: '', remember: true, sender: '' })
+const correctingPlatform = ref(false)
+
+// 重命名平台相关状态
+const renamePlatformDialogVisible = ref(false)
+const renamePlatformForm = ref({ oldName: '', newName: '' })
+const renamingPlatform = ref(false)
+
 // 全局 Graph API 开关状态
 const globalUseGraphApi = ref(false)
 const outlookEmailCount = ref(0)
 const subscriptionCount = ref(0)
+const creatingSubscriptions = ref(false)
 
 // 从服务器加载 Graph API 配置
 const loadGraphApiConfig = async () => {
@@ -586,6 +815,37 @@ const loadGraphApiConfig = async () => {
     }
   } catch (error) {
     console.error('加载 Graph API 配置失败:', error)
+  }
+}
+
+// 为未订阅的邮箱创建订阅
+const createMissingSubscriptions = async () => {
+  creatingSubscriptions.value = true
+  try {
+    const response = await fetch('/api/graph/subscriptions/create_all', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('token')}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ async: true })
+    })
+    
+    if (response.ok) {
+      ElMessage.success('正在后台创建订阅，请稍后刷新查看')
+      // 延迟刷新统计
+      setTimeout(() => {
+        loadGraphApiConfig()
+      }, 5000)
+    } else {
+      const data = await response.json()
+      ElMessage.error(data.error || '创建订阅失败')
+    }
+  } catch (error) {
+    console.error('创建订阅失败:', error)
+    ElMessage.error('创建订阅失败: ' + error.message)
+  } finally {
+    creatingSubscriptions.value = false
   }
 }
 
@@ -729,11 +989,31 @@ const loading = computed(() => emailsStore.loading)
 const currentEmail = computed(() => emailsStore.getEmailById(emailsStore.currentEmailId))
 const mailRecords = computed(() => emailsStore.currentMailRecords)
 const hasSelectedEmails = computed(() => emailsStore.hasSelectedEmails)
+const selectedEmailsCount = computed(() => emailsStore.selectedEmailsCount)
+
+// 根据平台筛选后的邮箱列表
+const filteredEmails = computed(() => {
+  if (!filterPlatform.value) {
+    return emails.value
+  }
+  
+  return emails.value.filter(email => {
+    const platforms = email.platforms || []
+    const hasPlatform = platforms.includes(filterPlatform.value)
+    
+    if (filterPlatformMode.value === 'has') {
+      return hasPlatform
+    } else {
+      return !hasPlatform
+    }
+  })
+})
 
 // 方法
 const refreshEmails = async () => {
   try {
     await emailsStore.fetchEmails()
+    await loadAllPlatforms()  // 刷新时也加载平台列表
     ElMessage.success('刷新成功')
   } catch (error) {
     console.error('获取邮箱列表失败:', error)
@@ -1385,11 +1665,287 @@ const submitEditForm = async () => {
   }
 }
 
+// ==================== 平台标签相关方法 ====================
+
+// 加载所有已使用的平台列表
+const loadAllPlatforms = async () => {
+  try {
+    const response = await fetch('/api/platforms', {
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('token')}`
+      }
+    })
+    if (response.ok) {
+      allPlatforms.value = await response.json()
+    }
+  } catch (error) {
+    console.error('加载平台列表失败:', error)
+  }
+}
+
+// 平台筛选变化
+const handlePlatformFilterChange = () => {
+  // 清空选中状态
+  emailsStore.selectedEmails = []
+}
+
+// 平台名称自动补全
+const queryPlatformSuggestions = (queryString, cb) => {
+  const results = queryString
+    ? allPlatforms.value.filter(p => p.platform_name.toLowerCase().includes(queryString.toLowerCase()))
+    : allPlatforms.value
+  cb(results.map(p => ({ value: p.platform_name, count: p.count })))
+}
+
+// 显示添加平台对话框
+const showAddPlatformDialog = (email) => {
+  currentPlatformEmail.value = email
+  platformForm.value.name = ''
+  addPlatformDialogVisible.value = true
+}
+
+// 重置平台表单
+const resetPlatformForm = () => {
+  platformForm.value.name = ''
+  currentPlatformEmail.value = null
+}
+
+// 确认添加平台标签
+const confirmAddPlatform = async () => {
+  if (!platformForm.value.name.trim()) {
+    ElMessage.warning('请输入平台名称')
+    return
+  }
+  
+  addingPlatform.value = true
+  try {
+    const response = await fetch(`/api/emails/${currentPlatformEmail.value.id}/platforms`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('token')}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ platform_name: platformForm.value.name.trim() })
+    })
+    
+    if (response.ok) {
+      ElMessage.success('添加成功')
+      addPlatformDialogVisible.value = false
+      // 刷新邮箱列表
+      await emailsStore.fetchEmails()
+      await loadAllPlatforms()
+    } else {
+      const data = await response.json()
+      ElMessage.error(data.error || '添加失败')
+    }
+  } catch (error) {
+    console.error('添加平台标签失败:', error)
+    ElMessage.error('添加失败: ' + error.message)
+  } finally {
+    addingPlatform.value = false
+  }
+}
+
+// 移除平台标签
+const removePlatform = async (emailId, platformName) => {
+  try {
+    const response = await fetch(`/api/emails/${emailId}/platforms/${encodeURIComponent(platformName)}`, {
+      method: 'DELETE',
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('token')}`
+      }
+    })
+    
+    if (response.ok) {
+      ElMessage.success('移除成功')
+      // 刷新邮箱列表
+      await emailsStore.fetchEmails()
+      await loadAllPlatforms()
+    } else {
+      const data = await response.json()
+      ElMessage.error(data.error || '移除失败')
+    }
+  } catch (error) {
+    console.error('移除平台标签失败:', error)
+    ElMessage.error('移除失败: ' + error.message)
+  }
+}
+
+// 显示批量添加平台对话框
+const showBatchAddPlatformDialog = () => {
+  if (!hasSelectedEmails.value) {
+    ElMessage.warning('请先选择邮箱')
+    return
+  }
+  batchPlatformForm.value.name = ''
+  batchAddPlatformDialogVisible.value = true
+}
+
+// 确认批量添加平台标签
+const confirmBatchAddPlatform = async () => {
+  if (!batchPlatformForm.value.name.trim()) {
+    ElMessage.warning('请输入平台名称')
+    return
+  }
+  
+  const emailIds = Array.isArray(emailsStore.selectedEmails) ? [...emailsStore.selectedEmails] : []
+  if (emailIds.length === 0) {
+    ElMessage.warning('没有选中有效的邮箱')
+    return
+  }
+  
+  addingPlatform.value = true
+  try {
+    const response = await fetch('/api/emails/batch_add_platform', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('token')}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        email_ids: emailIds,
+        platform_name: batchPlatformForm.value.name.trim()
+      })
+    })
+    
+    if (response.ok) {
+      const data = await response.json()
+      ElMessage.success(data.message || '添加成功')
+      batchAddPlatformDialogVisible.value = false
+      // 刷新邮箱列表
+      await emailsStore.fetchEmails()
+      await loadAllPlatforms()
+    } else {
+      const data = await response.json()
+      ElMessage.error(data.error || '添加失败')
+    }
+  } catch (error) {
+    console.error('批量添加平台标签失败:', error)
+    ElMessage.error('添加失败: ' + error.message)
+  } finally {
+    addingPlatform.value = false
+  }
+}
+
+// 显示纠正平台对话框
+const showCorrectPlatformDialog = (email, platformName) => {
+  correctPlatformEmail.value = email
+  correctPlatformForm.value = {
+    oldName: platformName,
+    newName: platformName,
+    remember: true,
+    sender: ''  // 需要从最近邮件获取发件人
+  }
+  correctPlatformDialogVisible.value = true
+}
+
+// 重置纠正平台表单
+const resetCorrectPlatformForm = () => {
+  correctPlatformEmail.value = null
+  correctPlatformForm.value = { oldName: '', newName: '', remember: true, sender: '' }
+}
+
+// 确认纠正平台名称
+const confirmCorrectPlatform = async () => {
+  if (!correctPlatformForm.value.newName.trim()) {
+    ElMessage.warning('请输入正确的平台名称')
+    return
+  }
+  
+  if (correctPlatformForm.value.newName.trim() === correctPlatformForm.value.oldName) {
+    ElMessage.warning('新名称与原名称相同')
+    return
+  }
+  
+  correctingPlatform.value = true
+  try {
+    const response = await fetch(`/api/emails/${correctPlatformEmail.value.id}/correct_platform`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('token')}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        old_name: correctPlatformForm.value.oldName,
+        new_name: correctPlatformForm.value.newName.trim(),
+        // 如果勾选了记住，传入发件人域名（这里简化处理，使用邮箱域名）
+        sender: correctPlatformForm.value.remember ? `@${correctPlatformForm.value.oldName.toLowerCase()}.com` : null
+      })
+    })
+    
+    if (response.ok) {
+      ElMessage.success('纠正成功')
+      correctPlatformDialogVisible.value = false
+      await emailsStore.fetchEmails()
+      await loadAllPlatforms()
+    } else {
+      const data = await response.json()
+      ElMessage.error(data.error || '纠正失败')
+    }
+  } catch (error) {
+    console.error('纠正平台名称失败:', error)
+    ElMessage.error('纠正失败: ' + error.message)
+  } finally {
+    correctingPlatform.value = false
+  }
+}
+
+// 显示重命名平台对话框
+const showRenamePlatformDialog = () => {
+  renamePlatformForm.value = { oldName: '', newName: '' }
+  renamePlatformDialogVisible.value = true
+}
+
+// 确认重命名平台
+const confirmRenamePlatform = async () => {
+  if (!renamePlatformForm.value.oldName || !renamePlatformForm.value.newName.trim()) {
+    ElMessage.warning('请选择平台并输入新名称')
+    return
+  }
+  
+  if (renamePlatformForm.value.oldName === renamePlatformForm.value.newName.trim()) {
+    ElMessage.warning('新名称与原名称相同')
+    return
+  }
+  
+  renamingPlatform.value = true
+  try {
+    const response = await fetch('/api/platforms/rename', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('token')}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        old_name: renamePlatformForm.value.oldName,
+        new_name: renamePlatformForm.value.newName.trim()
+      })
+    })
+    
+    if (response.ok) {
+      const data = await response.json()
+      ElMessage.success(data.message || '重命名成功')
+      renamePlatformDialogVisible.value = false
+      await emailsStore.fetchEmails()
+      await loadAllPlatforms()
+    } else {
+      const data = await response.json()
+      ElMessage.error(data.error || '重命名失败')
+    }
+  } catch (error) {
+    console.error('重命名平台失败:', error)
+    ElMessage.error('重命名失败: ' + error.message)
+  } finally {
+    renamingPlatform.value = false
+  }
+}
+
 // 生命周期钩子
 onMounted(() => {
   emailsStore.initWebSocketListeners()
   refreshEmails()
   loadGraphApiConfig()  // 加载 Graph API 配置
+  loadAllPlatforms()    // 加载平台列表
 })
 </script>
 
@@ -1432,6 +1988,13 @@ onMounted(() => {
   font-weight: 500;
 }
 
+.error-icon {
+  color: #f56c6c;
+  margin-right: 4px;
+  cursor: help;
+  flex-shrink: 0;
+}
+
 .error-info {
   max-width: 100%;
 }
@@ -1444,6 +2007,52 @@ onMounted(() => {
   white-space: nowrap;
   display: block;
   cursor: help;
+}
+
+.platforms-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.platform-tag {
+  margin: 0;
+}
+
+.platform-tag.clickable {
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.platform-tag.clickable:hover {
+  transform: scale(1.05);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.add-platform-btn {
+  padding: 2px;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+.add-platform-btn:hover {
+  opacity: 1;
+}
+
+.platform-dialog-header {
+  margin-bottom: 16px;
+  padding: 8px 12px;
+  background: #f5f7fa;
+  border-radius: 4px;
+}
+
+.platform-dialog-header p {
+  margin: 0;
+}
+
+.platform-filter {
+  flex-shrink: 0;
 }
 
 .copy-btn {

@@ -406,7 +406,14 @@ def get_all_emails(current_user):
     else:
         emails = db.get_all_emails(current_user['id'])
 
-    return jsonify([dict(email) for email in emails])
+    # 为每个邮箱添加平台标签
+    result = []
+    for email in emails:
+        email_dict = dict(email)
+        email_dict['platforms'] = db.get_email_platforms(email_dict['id'])
+        result.append(email_dict)
+
+    return jsonify(result)
 
 @app.route('/api/emails/export', methods=['GET'])
 @token_required
@@ -1086,6 +1093,223 @@ def update_email(current_user, email_id):
     except Exception as e:
         logger.error(f"更新邮箱信息失败: {str(e)}")
         return jsonify({'error': '更新邮箱信息失败'}), 500
+
+# ==================== 邮箱平台标签 API ====================
+
+@app.route('/api/emails/<int:email_id>/platforms', methods=['GET'])
+@token_required
+def get_email_platforms(current_user, email_id):
+    """获取邮箱的平台标签"""
+    # 验证邮箱所有权
+    email = db.get_email_by_id(email_id, current_user['id'])
+    if not email:
+        return jsonify({'error': '邮箱不存在或无权访问'}), 404
+    
+    platforms = db.get_email_platforms(email_id)
+    return jsonify(platforms)
+
+@app.route('/api/emails/<int:email_id>/platforms', methods=['POST'])
+@token_required
+def add_email_platform(current_user, email_id):
+    """为邮箱添加平台标签"""
+    # 验证邮箱所有权
+    email = db.get_email_by_id(email_id, current_user['id'])
+    if not email:
+        return jsonify({'error': '邮箱不存在或无权访问'}), 404
+    
+    data = request.get_json()
+    platform_name = data.get('platform_name', '').strip()
+    
+    if not platform_name:
+        return jsonify({'error': '平台名称不能为空'}), 400
+    
+    if len(platform_name) > 50:
+        return jsonify({'error': '平台名称不能超过50个字符'}), 400
+    
+    success = db.add_email_platform(email_id, platform_name)
+    if success:
+        return jsonify({'message': '添加成功', 'platform': platform_name})
+    return jsonify({'error': '添加失败'}), 500
+
+@app.route('/api/emails/<int:email_id>/platforms/<platform_name>', methods=['DELETE'])
+@token_required
+def remove_email_platform(current_user, email_id, platform_name):
+    """移除邮箱的平台标签"""
+    # 验证邮箱所有权
+    email = db.get_email_by_id(email_id, current_user['id'])
+    if not email:
+        return jsonify({'error': '邮箱不存在或无权访问'}), 404
+    
+    success = db.remove_email_platform(email_id, platform_name)
+    if success:
+        return jsonify({'message': '移除成功'})
+    return jsonify({'error': '移除失败'}), 500
+
+@app.route('/api/platforms', methods=['GET'])
+@token_required
+def get_all_platforms(current_user):
+    """获取所有已使用的平台列表"""
+    platforms = db.get_all_platforms(current_user['id'])
+    return jsonify(platforms)
+
+@app.route('/api/emails/batch_add_platform', methods=['POST'])
+@token_required
+def batch_add_platform(current_user):
+    """批量为邮箱添加平台标签"""
+    data = request.get_json()
+    email_ids = data.get('email_ids', [])
+    platform_name = data.get('platform_name', '').strip()
+    
+    if not email_ids:
+        return jsonify({'error': '请选择邮箱'}), 400
+    
+    if not platform_name:
+        return jsonify({'error': '平台名称不能为空'}), 400
+    
+    # 验证邮箱所有权
+    valid_ids = []
+    for email_id in email_ids:
+        email = db.get_email_by_id(email_id, current_user['id'])
+        if email:
+            valid_ids.append(email_id)
+    
+    if not valid_ids:
+        return jsonify({'error': '没有有效的邮箱'}), 400
+    
+    count = db.batch_add_email_platforms(valid_ids, platform_name)
+    return jsonify({'message': f'已为 {count} 个邮箱添加标签', 'count': count})
+
+# ==================== 平台识别规则 API ====================
+
+@app.route('/api/platform_rules', methods=['GET'])
+@token_required
+def get_platform_rules(current_user):
+    """获取平台识别规则列表"""
+    rules = db.get_platform_rules(current_user['id'])
+    return jsonify(rules)
+
+@app.route('/api/platform_rules', methods=['POST'])
+@token_required
+def add_platform_rule(current_user):
+    """添加平台识别规则"""
+    data = request.get_json()
+    platform_name = data.get('platform_name', '').strip()
+    sender_pattern = data.get('sender_pattern', '').strip() or None
+    subject_pattern = data.get('subject_pattern', '').strip() or None
+    content_pattern = data.get('content_pattern', '').strip() or None
+    
+    if not platform_name:
+        return jsonify({'error': '平台名称不能为空'}), 400
+    
+    if not sender_pattern and not subject_pattern and not content_pattern:
+        return jsonify({'error': '至少需要设置一个匹配规则'}), 400
+    
+    rule_id = db.add_platform_rule(
+        current_user['id'], platform_name, 
+        sender_pattern, subject_pattern, content_pattern
+    )
+    
+    if rule_id:
+        return jsonify({'message': '添加成功', 'id': rule_id})
+    return jsonify({'error': '添加失败'}), 500
+
+@app.route('/api/platform_rules/<int:rule_id>', methods=['PUT'])
+@token_required
+def update_platform_rule(current_user, rule_id):
+    """更新平台识别规则"""
+    data = request.get_json()
+    
+    update_data = {}
+    if 'platform_name' in data:
+        update_data['platform_name'] = data['platform_name'].strip()
+    if 'sender_pattern' in data:
+        update_data['sender_pattern'] = data['sender_pattern'].strip() or None
+    if 'subject_pattern' in data:
+        update_data['subject_pattern'] = data['subject_pattern'].strip() or None
+    if 'content_pattern' in data:
+        update_data['content_pattern'] = data['content_pattern'].strip() or None
+    if 'is_enabled' in data:
+        update_data['is_enabled'] = 1 if data['is_enabled'] else 0
+    
+    success = db.update_platform_rule(rule_id, current_user['id'], **update_data)
+    if success:
+        return jsonify({'message': '更新成功'})
+    return jsonify({'error': '更新失败'}), 500
+
+@app.route('/api/platform_rules/<int:rule_id>', methods=['DELETE'])
+@token_required
+def delete_platform_rule(current_user, rule_id):
+    """删除平台识别规则"""
+    success = db.delete_platform_rule(rule_id, current_user['id'])
+    if success:
+        return jsonify({'message': '删除成功'})
+    return jsonify({'error': '删除失败'}), 500
+
+# ==================== 平台名称纠正 API ====================
+
+@app.route('/api/platform_corrections', methods=['GET'])
+@token_required
+def get_platform_corrections(current_user):
+    """获取平台纠正映射列表"""
+    corrections = db.get_all_platform_corrections(current_user['id'])
+    return jsonify(corrections)
+
+@app.route('/api/platform_corrections/<int:correction_id>', methods=['DELETE'])
+@token_required
+def delete_platform_correction(current_user, correction_id):
+    """删除平台纠正映射"""
+    success = db.delete_platform_correction(correction_id, current_user['id'])
+    if success:
+        return jsonify({'message': '删除成功'})
+    return jsonify({'error': '删除失败'}), 500
+
+@app.route('/api/emails/<int:email_id>/correct_platform', methods=['POST'])
+@token_required
+def correct_email_platform(current_user, email_id):
+    """
+    纠正邮箱的平台标签
+    - old_name: 旧的平台名称（可选，用于移除）
+    - new_name: 新的平台名称
+    - sender: 发件人地址（可选，用于保存纠正映射）
+    """
+    # 验证邮箱所有权
+    email = db.get_email_by_id(email_id, current_user['id'])
+    if not email:
+        return jsonify({'error': '邮箱不存在或无权限'}), 404
+    
+    data = request.get_json()
+    old_name = data.get('old_name', '').strip() or None
+    new_name = data.get('new_name', '').strip()
+    sender = data.get('sender', '').strip() or None
+    
+    if not new_name:
+        return jsonify({'error': '新平台名称不能为空'}), 400
+    
+    success = db.correct_platform_name(email_id, old_name, new_name, sender)
+    if success:
+        return jsonify({'message': '纠正成功'})
+    return jsonify({'error': '纠正失败'}), 500
+
+@app.route('/api/platforms/rename', methods=['POST'])
+@token_required
+def rename_platform(current_user):
+    """
+    重命名平台：批量更新所有使用该平台名的邮箱
+    - old_name: 旧的平台名称
+    - new_name: 新的平台名称
+    """
+    data = request.get_json()
+    old_name = data.get('old_name', '').strip()
+    new_name = data.get('new_name', '').strip()
+    
+    if not old_name or not new_name:
+        return jsonify({'error': '平台名称不能为空'}), 400
+    
+    if old_name == new_name:
+        return jsonify({'error': '新旧名称相同'}), 400
+    
+    count = db.rename_platform(current_user['id'], old_name, new_name)
+    return jsonify({'message': f'已更新 {count} 个邮箱', 'count': count})
 
 @app.route('/api/email/start_real_time_check', methods=['POST'])
 @token_required
