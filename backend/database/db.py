@@ -923,15 +923,17 @@ class Database:
             name = name_match.group(1).strip()
             # 过滤掉通用名称
             generic_names = ['noreply', 'no-reply', 'support', 'info', 'admin', 'service', 'team', 'notification', 'notifications', 'mail', 'email']
-            if name.lower() not in generic_names and len(name) >= 2:
+            if name.lower() not in generic_names and len(name) >= 2 and not '@' in name:
                 return name
         
-        # 从邮箱域名提取，如 "noreply@morelogin.com" -> "morelogin"
-        email_match = re.search(r'@([a-zA-Z0-9-]+)\.', sender)
-        if email_match:
-            domain = email_match.group(1).lower()
+        # 从邮箱域名提取，如 "noreply@morelogin.com" -> "Morelogin"
+        # 或 "morelogin@service.morelogin.com" -> "Morelogin"
+        # 优先从二级域名提取
+        domain_match = re.search(r'@(?:[a-zA-Z0-9-]+\.)?([a-zA-Z0-9-]+)\.[a-zA-Z]+$', sender)
+        if domain_match:
+            domain = domain_match.group(1).lower()
             # 过滤掉通用域名
-            generic_domains = ['gmail', 'outlook', 'hotmail', 'yahoo', 'qq', '163', '126', 'mail', 'email', 'service', 'noreply']
+            generic_domains = ['gmail', 'outlook', 'hotmail', 'yahoo', 'qq', '163', '126', 'mail', 'email', 'service', 'noreply', 'com', 'net', 'org']
             if domain not in generic_domains and len(domain) >= 2:
                 # 首字母大写
                 return domain.capitalize()
