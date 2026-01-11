@@ -225,7 +225,7 @@ const refreshMails = () => {
 
 const formatDate = (dateString) => {
   if (!dateString) return '无'
-  return dayjs(dateString).format('YYYY-MM-DD HH:mm:ss')
+  return dayjs(dateString).format('MM-DD HH:mm')
 }
 
 const viewMailContent = (row) => {
