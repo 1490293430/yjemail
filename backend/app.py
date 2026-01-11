@@ -1386,6 +1386,42 @@ def get_unregistered_emails(current_user, platform_name):
         'message': '没有未注册的邮箱了'
     })
 
+@app.route('/api/platforms/<platform_name>/unregistered/all', methods=['GET'])
+@token_required
+def get_all_unregistered_emails(current_user, platform_name):
+    """
+    获取未注册某个平台的所有邮箱
+    
+    返回:
+    {
+        "platform": "比特浏览器",
+        "count": 50,
+        "emails": ["a@outlook.com", "b@outlook.com", ...]
+    }
+    """
+    # 获取用户所有邮箱
+    if current_user['is_admin']:
+        all_emails = db.get_all_emails()
+    else:
+        all_emails = db.get_all_emails(current_user['id'])
+    
+    # 筛选未注册该平台的邮箱
+    unregistered = []
+    platform_lower = platform_name.lower()
+    
+    for email in all_emails:
+        platforms = db.get_email_platforms(email['id'])
+        # 检查是否未注册该平台（不区分大小写）
+        has_platform = any(p.lower() == platform_lower for p in platforms)
+        if not has_platform:
+            unregistered.append(email['email'])
+    
+    return jsonify({
+        'platform': platform_name,
+        'count': len(unregistered),
+        'emails': unregistered
+    })
+
 @app.route('/api/platforms/<platform_name>/registered', methods=['GET'])
 @token_required
 def get_registered_emails(current_user, platform_name):
