@@ -1323,7 +1323,7 @@ const resetAddEmailForm = () => {
 // 格式化日期
 const formatDate = (dateString) => {
   if (!dateString) return '无';
-  return dayjs(dateString).format('YYYY-MM-DD HH:mm:ss');
+  return dayjs(dateString).format('MM-DD HH:mm');
 };
 
 // 判断邮箱是否正在处理中
