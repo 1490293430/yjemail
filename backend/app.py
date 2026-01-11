@@ -814,9 +814,9 @@ def get_verification_code(current_user):
     start_time = datetime.now()
     end_time = start_time + timedelta(seconds=timeout)
     
-    # 先检查现有邮件（最近2分钟内的），按时间倒序排列，返回最新的
+    # 先检查现有邮件（最近30秒内的），按时间倒序排列，返回最新的
     mail_records = db.get_mail_records(email_info['id'])
-    recent_limit = start_time - timedelta(minutes=2)
+    recent_limit = start_time - timedelta(seconds=30)
     
     logger.info(f"检查邮箱 {email_address} 的邮件，共 {len(mail_records)} 封，时间范围: {recent_limit}")
     
