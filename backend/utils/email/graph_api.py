@@ -113,11 +113,15 @@ class GraphAPIMailHandler:
                     from_info = msg.get("from", {}).get("emailAddress", {})
                     sender = f"{from_info.get('name', '')} <{from_info.get('address', '')}>"
                     
-                    # 解析接收时间
+                    # 解析接收时间，转换为北京时间
                     received_time = msg.get("receivedDateTime")
                     if received_time:
                         try:
-                            received_time = datetime.fromisoformat(received_time.replace("Z", "+00:00"))
+                            # 解析UTC时间
+                            utc_time = datetime.fromisoformat(received_time.replace("Z", "+00:00"))
+                            # 转换为北京时间 (UTC+8)
+                            beijing_time = utc_time + timedelta(hours=8)
+                            received_time = beijing_time.replace(tzinfo=None)
                         except:
                             pass
                     
