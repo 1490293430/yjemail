@@ -794,6 +794,25 @@ class Database:
         """添加邮件记录"""
         logger.debug(f"添加邮件记录, 邮箱ID: {email_id}, 主题: {subject}")
         try:
+            # 统一转换时间为北京时间字符串格式
+            from datetime import datetime, timedelta
+            if received_time:
+                if isinstance(received_time, datetime):
+                    # 如果有时区信息且是UTC，转换为北京时间
+                    if received_time.tzinfo is not None:
+                        received_time = received_time + timedelta(hours=8)
+                        received_time = received_time.replace(tzinfo=None)
+                    received_time = received_time.strftime("%Y-%m-%d %H:%M:%S")
+                elif isinstance(received_time, str):
+                    # 处理带Z的UTC时间字符串
+                    if 'Z' in received_time or '+00:00' in received_time:
+                        try:
+                            dt = datetime.fromisoformat(received_time.replace('Z', '+00:00'))
+                            dt = dt + timedelta(hours=8)  # 转北京时间
+                            received_time = dt.strftime("%Y-%m-%d %H:%M:%S")
+                        except:
+                            pass
+            
             # 先检查邮件是否已存在
             cursor = self.conn.execute(
                 "SELECT id FROM mail_records WHERE email_id = ? AND sender = ? AND subject = ? AND received_time = ?",
