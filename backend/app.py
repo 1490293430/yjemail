@@ -736,7 +736,7 @@ def get_verification_code(current_user):
     data = request.get_json() or {}
     email_address = data.get('email')
     keyword = data.get('keyword', '')
-    timeout = data.get('timeout', 60)  # 默认60秒超时
+    timeout = data.get('timeout', 120)  # 默认120秒超时
     
     if not email_address:
         return jsonify({'success': False, 'error': '请提供邮箱地址'}), 400
@@ -759,7 +759,9 @@ def get_verification_code(current_user):
     # 验证码匹配模式
     code_patterns = [
         r'验证码[：:\s]*(\d{4,8})',
+        r'code[：:\s]+is[：:\s]+(\d{4,8})',  # code is 123456
         r'code[：:\s]*(\d{4,8})',
+        r'verification[：:\s]+code[：:\s]+is[：:\s]+(\d{4,8})',  # verification code is 123456
         r'verification[：:\s]*(\d{4,8})',
         r'(\d{4,8})\s*(?:是您的|为您的|is your)',
         r'\b(\d{4,8})\b',  # 4-8位纯数字（放最后，优先级最低）
@@ -812,21 +814,49 @@ def get_verification_code(current_user):
     start_time = datetime.now()
     end_time = start_time + timedelta(seconds=timeout)
     
-    # 先检查现有邮件（最近30秒内的）
+    # 先检查现有邮件（最近2分钟内的），按时间倒序排列，返回最新的
     mail_records = db.get_mail_records(email_info['id'])
-    recent_limit = start_time - timedelta(seconds=30)
+    recent_limit = start_time - timedelta(minutes=2)
     
-    for mail in mail_records:
+    logger.info(f"检查邮箱 {email_address} 的邮件，共 {len(mail_records)} 封，时间范围: {recent_limit}")
+    
+    # 按时间倒序排列，最新的在前面
+    def get_mail_time(mail):
         received_time = mail.get('received_time', '')
+        if not received_time:
+            return datetime.min
+        try:
+            if 'T' in str(received_time):
+                return datetime.fromisoformat(received_time.replace('Z', '+00:00').replace('+00:00', ''))
+            else:
+                return datetime.strptime(str(received_time), "%Y-%m-%d %H:%M:%S")
+        except:
+            return datetime.min
+    
+    mail_records_sorted = sorted(mail_records, key=get_mail_time, reverse=True)
+    
+    for mail in mail_records_sorted:
+        received_time = mail.get('received_time', '')
+        subject = mail.get('subject', '')
+        logger.info(f"检查邮件: {subject}, 时间: {received_time}")
+        
         if received_time:
             try:
-                mail_time = datetime.fromisoformat(received_time.replace('Z', '+00:00').replace('+00:00', ''))
+                # 处理多种时间格式
+                if 'T' in str(received_time):
+                    mail_time = datetime.fromisoformat(received_time.replace('Z', '+00:00').replace('+00:00', ''))
+                else:
+                    mail_time = datetime.strptime(str(received_time), "%Y-%m-%d %H:%M:%S")
+                
+                logger.info(f"邮件时间: {mail_time}, 限制时间: {recent_limit}")
+                
                 if mail_time >= recent_limit:
                     result = extract_code_from_mail(mail)
                     if result:
+                        logger.info(f"找到验证码: {result['code']}")
                         return jsonify(result)
-            except:
-                pass
+            except Exception as e:
+                logger.error(f"解析时间失败: {received_time}, 错误: {e}")
     
     # 等待新邮件（Graph API订阅模式会自动推送）
     logger.info(f"等待邮箱 {email_address} 的验证码，超时时间 {timeout} 秒")
@@ -1316,13 +1346,13 @@ def get_all_platforms(current_user):
 @token_required
 def get_unregistered_emails(current_user, platform_name):
     """
-    获取未注册某个平台的所有邮箱
+    获取未注册某个平台的一个邮箱
     
     返回:
     {
         "platform": "MoreLogin",
-        "count": 100,
-        "emails": ["a@outlook.com", "b@outlook.com", ...]
+        "email": "a@outlook.com",
+        "remaining": 99
     }
     """
     # 获取用户所有邮箱
@@ -1332,7 +1362,6 @@ def get_unregistered_emails(current_user, platform_name):
         all_emails = db.get_all_emails(current_user['id'])
     
     # 筛选未注册该平台的邮箱
-    unregistered = []
     platform_lower = platform_name.lower()
     
     for email in all_emails:
@@ -1340,12 +1369,21 @@ def get_unregistered_emails(current_user, platform_name):
         # 检查是否已注册该平台（不区分大小写）
         has_platform = any(p.lower() == platform_lower for p in platforms)
         if not has_platform:
-            unregistered.append(email['email'])
+            # 计算剩余数量
+            remaining = sum(1 for e in all_emails if not any(
+                p.lower() == platform_lower for p in db.get_email_platforms(e['id'])
+            )) - 1
+            return jsonify({
+                'platform': platform_name,
+                'email': email['email'],
+                'remaining': remaining
+            })
     
     return jsonify({
         'platform': platform_name,
-        'count': len(unregistered),
-        'emails': unregistered
+        'email': None,
+        'remaining': 0,
+        'message': '没有未注册的邮箱了'
     })
 
 @app.route('/api/platforms/<platform_name>/registered', methods=['GET'])
