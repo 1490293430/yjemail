@@ -999,11 +999,11 @@ const selectedEmailsCount = computed(() => emailsStore.selectedEmailsCount)
 const filteredEmails = computed(() => {
   let result = emails.value
   
-  // 先按邮箱搜索过滤
+  // 先按邮箱前缀过滤
   if (emailSearchFilter.value) {
     const searchLower = emailSearchFilter.value.toLowerCase()
     result = result.filter(email => 
-      email.email && email.email.toLowerCase().includes(searchLower)
+      email.email && email.email.toLowerCase().startsWith(searchLower)
     )
   }
   
