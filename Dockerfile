@@ -38,10 +38,13 @@ ENV HOST=0.0.0.0 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Install runtime dependencies
+# Install runtime dependencies and timezone
 RUN apt-get update && apt-get install -y \
     curl \
     bash \
+    tzdata \
+    && ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+    && echo "Asia/Shanghai" > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Caddy using binary download
