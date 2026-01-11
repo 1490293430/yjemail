@@ -9,7 +9,7 @@
               <el-tooltip content="开启后，所有 Outlook 邮箱将使用 Graph API 方式收信" placement="top">
                 <div class="graph-api-switch flex gap-sm" style="align-items: center; margin-left: 16px;">
                   <span style="font-size: 13px; color: #909399;">
-                    邮箱: {{ outlookEmailCount }} | 订阅: {{ subscriptionCount }}
+                    邮箱: {{ outlookEmailCount }} | 订阅: {{ subscriptionCount }}<span v-if="expiredCount > 0" style="color: #F56C6C;"> | 过期: {{ expiredCount }}</span>
                   </span>
                   <el-button
                     v-if="outlookEmailCount > subscriptionCount"
@@ -64,6 +64,15 @@
             批量收信
           </el-button>
           <el-button
+            type="success"
+            @click="handleBatchCheckUnchecked"
+            :icon="Download"
+            class="hover-scale"
+            :loading="batchCheckingUnchecked"
+          >
+            检查未收信邮箱
+          </el-button>
+          <el-button
             type="danger"
             @click="clearErrorEmails"
             :icon="Delete"
@@ -113,6 +122,16 @@
               导出邮箱
             </el-button>
           </div>
+        </div>
+
+        <div class="search-bar mb-4">
+          <el-input
+            v-model="emailSearchFilter"
+            placeholder="搜索邮箱..."
+            clearable
+            style="width: 300px;"
+            :prefix-icon="Search"
+          />
         </div>
 
         <el-table
@@ -681,7 +700,8 @@ import {
   InfoFilled,
   CopyDocument,
   WarningFilled,
-  Edit
+  Edit,
+  Search
 } from '@element-plus/icons-vue'
 import dayjs from 'dayjs'
 import DOMPurify from 'dompurify'
@@ -761,6 +781,7 @@ const addingPlatform = ref(false)
 const allPlatforms = ref([])  // 所有已使用的平台列表
 const filterPlatform = ref('')  // 当前筛选的平台
 const filterPlatformMode = ref('has')  // 筛选模式: has=已注册, not=未注册
+const emailSearchFilter = ref('')  // 邮箱搜索过滤
 
 // 纠正平台相关状态
 const correctPlatformDialogVisible = ref(false)
@@ -777,7 +798,9 @@ const renamingPlatform = ref(false)
 const globalUseGraphApi = ref(false)
 const outlookEmailCount = ref(0)
 const subscriptionCount = ref(0)
+const expiredCount = ref(0)
 const creatingSubscriptions = ref(false)
+const batchCheckingUnchecked = ref(false)
 
 // 从服务器加载 Graph API 配置
 const loadGraphApiConfig = async () => {
@@ -792,6 +815,7 @@ const loadGraphApiConfig = async () => {
       globalUseGraphApi.value = data.use_graph_api
       outlookEmailCount.value = data.outlook_email_count || 0
       subscriptionCount.value = data.subscription_count || 0
+      expiredCount.value = data.expired_count || 0
     }
   } catch (error) {
     console.error('加载 Graph API 配置失败:', error)
@@ -973,15 +997,25 @@ const selectedEmailsCount = computed(() => emailsStore.selectedEmailsCount)
 
 // 根据平台筛选后的邮箱列表
 const filteredEmails = computed(() => {
-  // 如果没有选择平台，返回全部
+  let result = emails.value
+  
+  // 先按邮箱搜索过滤
+  if (emailSearchFilter.value) {
+    const searchLower = emailSearchFilter.value.toLowerCase()
+    result = result.filter(email => 
+      email.email && email.email.toLowerCase().includes(searchLower)
+    )
+  }
+  
+  // 如果没有选择平台，返回搜索结果
   if (!filterPlatform.value) {
-    return emails.value
+    return result
   }
   
   // 筛选特定平台（不区分大小写）
   const filterLower = filterPlatform.value.toLowerCase()
   
-  const result = emails.value.filter(email => {
+  result = result.filter(email => {
     const platforms = email.platforms || []
     const hasPlatform = platforms.some(p => p && p.toLowerCase() === filterLower)
     
@@ -1119,6 +1153,35 @@ const handleBatchCheck = async () => {
   } catch (error) {
     console.error('批量检查邮箱失败:', error)
     ElMessage.error('批量检查邮箱失败: ' + (error.message || '未知错误'))
+  }
+}
+
+// 批量检查未收信的邮箱
+const handleBatchCheckUnchecked = async () => {
+  batchCheckingUnchecked.value = true
+  try {
+    const response = await fetch('/api/emails/batch_check_unchecked', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('token')}`,
+        'Content-Type': 'application/json'
+      }
+    })
+    const data = await response.json()
+    if (response.ok) {
+      if (data.count > 0) {
+        ElMessage.success(`正在检查 ${data.count} 个未收信的邮箱...`)
+      } else {
+        ElMessage.info('没有未收信的邮箱')
+      }
+    } else {
+      ElMessage.error(data.error || '操作失败')
+    }
+  } catch (error) {
+    console.error('批量检查未收信邮箱失败:', error)
+    ElMessage.error('操作失败: ' + (error.message || '未知错误'))
+  } finally {
+    batchCheckingUnchecked.value = false
   }
 }
 

@@ -694,6 +694,46 @@ def batch_check_emails(current_user):
         'total': len(email_ids)
     })
 
+@app.route('/api/emails/batch_check_unchecked', methods=['POST'])
+@token_required
+def batch_check_unchecked_emails(current_user):
+    """批量检查未收信的邮箱（last_check_time 为空的邮箱）"""
+    # 从数据库获取全局 Graph API 设置
+    use_graph_api = db.is_graph_api_enabled()
+
+    # 获取用户的邮箱
+    if current_user['is_admin']:
+        emails = db.get_all_emails()
+    else:
+        emails = db.get_all_emails(current_user['id'])
+
+    # 筛选未检查过的邮箱（last_check_time 为空）
+    unchecked_ids = [email['id'] for email in emails if not email.get('last_check_time')]
+
+    if not unchecked_ids:
+        return jsonify({'message': '没有未收信的邮箱', 'count': 0})
+
+    # 过滤掉已经在处理的邮箱ID
+    valid_ids = [eid for eid in unchecked_ids if not email_processor.is_email_being_processed(eid)]
+
+    if not valid_ids:
+        return jsonify({'message': '所有未收信的邮箱都在处理中', 'count': 0})
+
+    logger.info(f"批量检查未收信邮箱: {len(valid_ids)} 个 (用户ID: {current_user['id']})")
+
+    # 自定义进度回调
+    def progress_callback(email_id, progress, message):
+        logger.info(f"邮箱 ID {email_id} 处理进度: {progress}%, 消息: {message}")
+
+    # 启动邮件检查线程
+    email_processor.check_emails(valid_ids, progress_callback, use_graph_api=use_graph_api)
+
+    return jsonify({
+        'message': f'开始检查 {len(valid_ids)} 个未收信的邮箱',
+        'count': len(valid_ids),
+        'total_unchecked': len(unchecked_ids)
+    })
+
 @app.route('/api/emails/<int:email_id>/mail_records', methods=['GET'])
 @token_required
 def get_mail_records(current_user, email_id):
@@ -2020,18 +2060,38 @@ def set_graph_config(current_user):
 @token_required
 def get_graph_api_status(current_user):
     """获取 Graph API 开关状态（所有用户可访问）"""
+    from datetime import datetime
+    
     # 获取 Outlook 邮箱数量
     outlook_emails = db.get_all_outlook_emails()
     outlook_count = len(outlook_emails) if outlook_emails else 0
     
-    # 获取订阅数量
+    # 获取订阅数量和过期数量
     subscriptions = db.get_all_subscriptions()
     subscription_count = len(subscriptions) if subscriptions else 0
+    
+    # 统计过期订阅
+    expired_count = 0
+    now = datetime.now()
+    if subscriptions:
+        for sub in subscriptions:
+            exp_time = sub.get('expiration_time')
+            if exp_time:
+                try:
+                    if isinstance(exp_time, str):
+                        exp_dt = datetime.strptime(exp_time, "%Y-%m-%d %H:%M:%S")
+                    else:
+                        exp_dt = exp_time
+                    if exp_dt < now:
+                        expired_count += 1
+                except:
+                    pass
     
     return jsonify({
         'use_graph_api': db.is_graph_api_enabled(),
         'outlook_email_count': outlook_count,
-        'subscription_count': subscription_count
+        'subscription_count': subscription_count,
+        'expired_count': expired_count
     })
 
 def parse_args():

@@ -153,51 +153,62 @@ class GraphWebhookManager:
             expiration_time = datetime.now(timezone.utc) + timedelta(minutes=self.MAX_EXPIRATION_MINUTES)
             expiration_str = expiration_time.strftime("%Y-%m-%dT%H:%M:%S.0000000Z")
             
-            # 创建订阅
-            url = f"{self.GRAPH_API_BASE}/subscriptions"
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json"
-            }
-            
-            payload = {
-                "changeType": "created",
-                "notificationUrl": self.webhook_url,
-                "resource": "me/mailFolders('Inbox')/messages",
-                "expirationDateTime": expiration_str,
-                "clientState": f"email_{email_id}"  # 用于验证通知来源
-            }
-            
-            response = requests.post(url, headers=headers, json=payload)
-            
-            if response.status_code == 201:
-                data = response.json()
-                subscription_id = data.get('id')
+            # 创建订阅的通用函数
+            def create_folder_subscription(folder_name, folder_id):
+                url = f"{self.GRAPH_API_BASE}/subscriptions"
+                headers = {
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json"
+                }
                 
-                # 保存到数据库
-                self.db.add_subscription(
-                    email_id=email_id,
-                    subscription_id=subscription_id,
-                    resource=payload['resource'],
-                    expiration_time=expiration_time.strftime("%Y-%m-%d %H:%M:%S")
-                )
+                payload = {
+                    "changeType": "created",
+                    "notificationUrl": self.webhook_url,
+                    "resource": f"me/mailFolders('{folder_id}')/messages",
+                    "expirationDateTime": expiration_str,
+                    "clientState": f"email_{email_id}_{folder_name}"
+                }
                 
+                response = requests.post(url, headers=headers, json=payload)
+                
+                if response.status_code == 201:
+                    data = response.json()
+                    subscription_id = data.get('id')
+                    
+                    # 保存到数据库
+                    self.db.add_subscription(
+                        email_id=email_id,
+                        subscription_id=subscription_id,
+                        resource=payload['resource'],
+                        expiration_time=expiration_time.strftime("%Y-%m-%d %H:%M:%S")
+                    )
+                    
+                    logger.info(f"邮箱 {email_info['email']} 创建 {folder_name} 订阅成功: {subscription_id}")
+                    return subscription_id
+                elif response.status_code == 429:
+                    retry_after = response.headers.get('Retry-After', '60')
+                    logger.warning(f"创建 {folder_name} 订阅被限流，需要等待 {retry_after} 秒")
+                    return None
+                else:
+                    logger.error(f"创建 {folder_name} 订阅失败: {response.status_code} - {response.text}")
+                    return None
+            
+            # 创建 Inbox 订阅
+            inbox_sub = create_folder_subscription('Inbox', 'Inbox')
+            
+            # 创建 JunkEmail（垃圾邮件）订阅
+            junk_sub = create_folder_subscription('JunkEmail', 'JunkEmail')
+            
+            if inbox_sub or junk_sub:
                 # 清除之前的错误状态
                 self.db.clear_email_error(email_id)
                 
-                logger.info(f"邮箱 {email_info['email']} 创建订阅成功: {subscription_id}")
                 return {
-                    'subscription_id': subscription_id,
+                    'inbox_subscription_id': inbox_sub,
+                    'junk_subscription_id': junk_sub,
                     'expiration_time': expiration_time
                 }
-            elif response.status_code == 429:
-                # 限流，需要等待
-                retry_after = response.headers.get('Retry-After', '60')
-                logger.warning(f"创建订阅被限流，需要等待 {retry_after} 秒")
-                return None
             else:
-                error_msg = response.text
-                logger.error(f"创建订阅失败: {response.status_code} - {error_msg}")
                 return None
                 
         except Exception as e:
