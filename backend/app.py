@@ -2070,6 +2070,9 @@ def get_graph_api_status(current_user):
     subscriptions = db.get_all_subscriptions()
     subscription_count = len(subscriptions) if subscriptions else 0
     
+    # 每个邮箱有2个订阅（Inbox + JunkEmail）
+    expected_subscription_count = outlook_count * 2
+    
     # 统计过期订阅
     expired_count = 0
     now = datetime.now()
@@ -2091,6 +2094,7 @@ def get_graph_api_status(current_user):
         'use_graph_api': db.is_graph_api_enabled(),
         'outlook_email_count': outlook_count,
         'subscription_count': subscription_count,
+        'expected_subscription_count': expected_subscription_count,
         'expired_count': expired_count
     })
 

@@ -444,14 +444,16 @@ class GraphWebhookHandler:
         
         logger.info(f"收到通知: changeType={change_type}, clientState={client_state}")
         
-        # 从 clientState 解析邮箱 ID
+        # 从 clientState 解析邮箱 ID（格式: email_123 或 email_123_JunkEmail）
         if not client_state.startswith('email_'):
             logger.warning(f"无效的 clientState: {client_state}")
             return
         
         try:
-            email_id = int(client_state.replace('email_', ''))
-        except ValueError:
+            # 移除 email_ 前缀，然后提取数字部分
+            parts = client_state.replace('email_', '').split('_')
+            email_id = int(parts[0])
+        except (ValueError, IndexError):
             logger.warning(f"无法解析邮箱 ID: {client_state}")
             return
         

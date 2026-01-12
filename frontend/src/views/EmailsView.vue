@@ -9,7 +9,7 @@
               <el-tooltip content="开启后，所有 Outlook 邮箱将使用 Graph API 方式收信" placement="top">
                 <div class="graph-api-switch flex gap-sm" style="align-items: center; margin-left: 16px;">
                   <span style="font-size: 13px; color: #909399;">
-                    邮箱: {{ outlookEmailCount }} | 订阅: {{ subscriptionCount }}<span v-if="expiredCount > 0" style="color: #F56C6C;"> | 过期: {{ expiredCount }}</span>
+                    邮箱: {{ outlookEmailCount }} | 订阅: {{ subscribedEmailCount }}x2<span v-if="expiredCount > 0" style="color: #F56C6C;"> | 过期: {{ expiredCount }}</span>
                   </span>
                   <el-button
                     v-if="outlookEmailCount > subscriptionCount"
@@ -798,6 +798,8 @@ const renamingPlatform = ref(false)
 const globalUseGraphApi = ref(false)
 const outlookEmailCount = ref(0)
 const subscriptionCount = ref(0)
+const subscribedEmailCount = ref(0)
+const expectedSubscriptionCount = ref(0)
 const expiredCount = ref(0)
 const creatingSubscriptions = ref(false)
 const batchCheckingUnchecked = ref(false)
@@ -815,6 +817,8 @@ const loadGraphApiConfig = async () => {
       globalUseGraphApi.value = data.use_graph_api
       outlookEmailCount.value = data.outlook_email_count || 0
       subscriptionCount.value = data.subscription_count || 0
+      subscribedEmailCount.value = Math.floor((data.subscription_count || 0) / 2)
+      expectedSubscriptionCount.value = data.expected_subscription_count || 0
       expiredCount.value = data.expired_count || 0
     }
   } catch (error) {
