@@ -450,9 +450,11 @@ class GraphWebhookHandler:
             return
         
         try:
-            # 移除 email_ 前缀，然后提取数字部分
+            # 移除 email_ 前缀，然后提取数字部分和文件夹
             parts = client_state.replace('email_', '').split('_')
             email_id = int(parts[0])
+            # 获取文件夹名（如果有）
+            folder = parts[1].lower() if len(parts) > 1 else None
         except (ValueError, IndexError):
             logger.warning(f"无法解析邮箱 ID: {client_state}")
             return
@@ -473,13 +475,18 @@ class GraphWebhookHandler:
                 self._processing_emails.add(email_id)
             
             try:
-                self._fetch_new_mail(email_info)
+                self._fetch_new_mail(email_info, folder)
             finally:
                 with self._processing_lock:
                     self._processing_emails.discard(email_id)
     
-    def _fetch_new_mail(self, email_info):
-        """获取新邮件"""
+    def _fetch_new_mail(self, email_info, folder=None):
+        """获取新邮件
+        
+        Args:
+            email_info: 邮箱信息
+            folder: 指定文件夹（inbox/junkemail），为None时获取两个文件夹
+        """
         try:
             email_id = email_info['id']
             user_id = email_info.get('user_id')
@@ -496,11 +503,24 @@ class GraphWebhookHandler:
                 logger.error(f"邮箱 {email_info['email']} 获取访问令牌失败")
                 return
             
-            # 获取最近的邮件（只获取最新的几封）
             handler = GraphAPIMailHandler(email_info['email'], access_token)
-            messages = handler.get_messages(folder="inbox", limit=5)
             
-            if not messages:
+            # 确定要获取的文件夹
+            folders_to_check = []
+            if folder:
+                folders_to_check = [(folder.lower(), folder.upper())]
+            else:
+                folders_to_check = [('inbox', 'INBOX'), ('junkemail', 'JUNK')]
+            
+            all_messages = []
+            for folder_name, folder_label in folders_to_check:
+                messages = handler.get_messages(folder=folder_name, limit=5)
+                if messages:
+                    for msg in messages:
+                        msg['_folder'] = folder_label
+                    all_messages.extend(messages)
+            
+            if not all_messages:
                 logger.info(f"邮箱 {email_info['email']} 没有新邮件")
                 return
             
@@ -508,7 +528,7 @@ class GraphWebhookHandler:
             saved_count = 0
             new_mails = []  # 保存新邮件信息用于广播
             
-            for msg in messages:
+            for msg in all_messages:
                 try:
                     received_time = msg.get('received_time')
                     if isinstance(received_time, datetime):
@@ -520,7 +540,7 @@ class GraphWebhookHandler:
                         sender=msg.get('sender', '(未知发件人)'),
                         received_time=received_time,
                         content=msg.get('content', ''),
-                        folder='INBOX',
+                        folder=msg.get('_folder', 'INBOX'),
                         has_attachments=1 if msg.get('has_attachments') else 0
                     )
                     if success and mail_id:
@@ -542,7 +562,7 @@ class GraphWebhookHandler:
             # 更新检查时间
             self.db.update_check_time(email_id)
             
-            logger.info(f"邮箱 {email_info['email']} 通过 Webhook 获取到 {len(messages)} 封邮件，新增 {saved_count} 封")
+            logger.info(f"邮箱 {email_info['email']} 通过 Webhook 获取到 {len(all_messages)} 封邮件，新增 {saved_count} 封")
             
             # 只有真正有新邮件时才广播
             if saved_count > 0 and self.ws_handler and new_mails:
