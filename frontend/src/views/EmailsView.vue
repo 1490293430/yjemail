@@ -12,7 +12,7 @@
                     邮箱: {{ outlookEmailCount }} | 订阅: {{ subscribedEmailCount }}x2<span v-if="expiredCount > 0" style="color: #F56C6C;"> | 过期: {{ expiredCount }}</span>
                   </span>
                   <el-button
-                    v-if="outlookEmailCount > subscriptionCount"
+                    v-if="subscribedEmailCount < outlookEmailCount"
                     type="primary"
                     size="small"
                     link
@@ -124,14 +124,19 @@
           </div>
         </div>
 
-        <div class="search-bar mb-4">
+        <div class="search-bar mb-4" style="display: flex; align-items: center; gap: 16px;">
           <el-input
             v-model="emailSearchFilter"
             placeholder="搜索邮箱..."
             clearable
             style="width: 300px;"
             :prefix-icon="Search"
+            @input="handleSearchInput"
+            @clear="handleSearchClear"
           />
+          <span style="color: #909399; font-size: 13px;">
+            共 {{ emailsStore.totalEmails }} 个邮箱，当前显示 {{ filteredEmails.length }} 个
+          </span>
         </div>
 
         <el-table
@@ -299,6 +304,19 @@
             </template>
           </el-table-column>
         </el-table>
+        
+        <!-- 分页 -->
+        <div class="pagination-wrapper" style="margin-top: 16px; display: flex; justify-content: flex-end;">
+          <el-pagination
+            v-model:current-page="currentPage"
+            v-model:page-size="currentPageSize"
+            :page-sizes="[100, 200, 500]"
+            :total="emailsStore.totalEmails"
+            layout="total, sizes, prev, pager, next, jumper"
+            @size-change="handlePageSizeChange"
+            @current-change="handlePageChange"
+          />
+        </div>
       </el-card>
 
       <!-- 添加邮箱对话框 -->
@@ -782,6 +800,8 @@ const allPlatforms = ref([])  // 所有已使用的平台列表
 const filterPlatform = ref('')  // 当前筛选的平台
 const filterPlatformMode = ref('has')  // 筛选模式: has=已注册, not=未注册
 const emailSearchFilter = ref('')  // 邮箱搜索过滤
+const currentPage = ref(1)
+const currentPageSize = ref(200)
 
 // 纠正平台相关状态
 const correctPlatformDialogVisible = ref(false)
@@ -999,19 +1019,11 @@ const mailRecords = computed(() => emailsStore.currentMailRecords)
 const hasSelectedEmails = computed(() => emailsStore.hasSelectedEmails)
 const selectedEmailsCount = computed(() => emailsStore.selectedEmailsCount)
 
-// 根据平台筛选后的邮箱列表
+// 根据平台筛选后的邮箱列表（后端已排序，前端只做平台筛选）
 const filteredEmails = computed(() => {
   let result = emails.value
   
-  // 先按邮箱前缀过滤
-  if (emailSearchFilter.value) {
-    const searchLower = emailSearchFilter.value.toLowerCase()
-    result = result.filter(email => 
-      email.email && email.email.toLowerCase().startsWith(searchLower)
-    )
-  }
-  
-  // 如果没有选择平台，返回搜索结果
+  // 如果没有选择平台，直接返回（后端已排序）
   if (!filterPlatform.value) {
     return result
   }
@@ -1019,7 +1031,7 @@ const filteredEmails = computed(() => {
   // 筛选特定平台（不区分大小写）
   const filterLower = filterPlatform.value.toLowerCase()
   
-  result = result.filter(email => {
+  return result.filter(email => {
     const platforms = email.platforms || []
     const hasPlatform = platforms.some(p => p && p.toLowerCase() === filterLower)
     
@@ -1029,8 +1041,6 @@ const filteredEmails = computed(() => {
       return !hasPlatform
     }
   })
-  
-  return result
 })
 
 // 异常邮箱数量
@@ -1038,10 +1048,69 @@ const errorEmailCount = computed(() => {
   return emails.value.filter(email => email.last_error).length
 })
 
+// 搜索防抖定时器
+let searchTimer = null
+
+// 搜索方法（防抖）
+const handleSearchInput = () => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(async () => {
+    currentPage.value = 1
+    await emailsStore.fetchEmails({
+      page: 1,
+      pageSize: currentPageSize.value,
+      search: emailSearchFilter.value
+    })
+  }, 300)
+}
+
+const handleSearch = async () => {
+  currentPage.value = 1
+  await emailsStore.fetchEmails({
+    page: 1,
+    pageSize: currentPageSize.value,
+    search: emailSearchFilter.value
+  })
+}
+
+const handleSearchClear = async () => {
+  emailSearchFilter.value = ''
+  currentPage.value = 1
+  await emailsStore.fetchEmails({
+    page: 1,
+    pageSize: currentPageSize.value,
+    search: ''
+  })
+}
+
+// 分页方法
+const handlePageChange = async (page) => {
+  currentPage.value = page
+  await emailsStore.fetchEmails({
+    page: page,
+    pageSize: currentPageSize.value,
+    search: emailSearchFilter.value
+  })
+}
+
+const handlePageSizeChange = async (size) => {
+  currentPageSize.value = size
+  currentPage.value = 1
+  await emailsStore.fetchEmails({
+    page: 1,
+    pageSize: size,
+    search: emailSearchFilter.value
+  })
+}
+
 // 方法
 const refreshEmails = async () => {
   try {
-    await emailsStore.fetchEmails()
+    await emailsStore.fetchEmails({
+      page: currentPage.value,
+      pageSize: currentPageSize.value,
+      search: emailSearchFilter.value
+    })
     await loadAllPlatforms()  // 刷新时也加载平台列表
     ElMessage.success('刷新成功')
   } catch (error) {

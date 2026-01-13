@@ -11,7 +11,13 @@ export const useEmailsStore = defineStore('emails', {
     processingEmails: {},
     currentMailRecords: [],
     currentEmailId: null,
-    isConnected: false
+    isConnected: false,
+    // 分页相关
+    totalEmails: 0,
+    currentPage: 1,
+    pageSize: 200,
+    totalPages: 1,
+    searchKeyword: ''
   }),
 
   getters: {
@@ -169,18 +175,30 @@ export const useEmailsStore = defineStore('emails', {
       }
     },
 
-    // 获取所有邮箱
-    async fetchEmails() {
+    // 获取所有邮箱（支持分页和搜索）
+    async fetchEmails(options = {}) {
       this.loading = true;
       this.error = null;
 
+      const { page = 1, pageSize = 200, search = '' } = options;
+
       try {
-        console.log('获取邮箱列表，WebSocket状态：', websocket.isConnected);
-        if (!websocket.isConnected) {
-          const response = await api.emails.getAll();
-          this.emails = response;
+        console.log('获取邮箱列表，页码：', page, '搜索：', search);
+        const response = await fetch(`/api/emails?page=${page}&page_size=${pageSize}&search=${encodeURIComponent(search)}`, {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
+          }
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          this.emails = data.emails || [];
+          this.totalEmails = data.total || 0;
+          this.currentPage = data.page || 1;
+          this.pageSize = data.page_size || 200;
+          this.totalPages = data.total_pages || 1;
         } else {
-          websocket.send('get_all_emails');
+          throw new Error('获取邮箱列表失败');
         }
       } catch (error) {
         this.error = '获取邮箱列表失败';

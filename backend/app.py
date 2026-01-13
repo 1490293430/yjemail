@@ -399,27 +399,66 @@ def get_config():
 @app.route('/api/emails', methods=['GET'])
 @token_required
 def get_all_emails(current_user):
-    """获取当前用户的所有邮箱"""
+    """获取当前用户的所有邮箱（支持分页和搜索）"""
+    # 获取分页和搜索参数
+    page = request.args.get('page', 1, type=int)
+    page_size = request.args.get('page_size', 200, type=int)
+    search = request.args.get('search', '').strip()
+    
     # 普通用户只能获取自己的邮箱，管理员可以获取所有邮箱
     if current_user['is_admin']:
         emails = db.get_all_emails()
     else:
         emails = db.get_all_emails(current_user['id'])
 
-    # 为每个邮箱添加平台标签
-    result = []
+    # 获取所有订阅，统计每个邮箱的订阅数
+    subscriptions = db.get_all_subscriptions()
+    email_sub_count = {}
+    for sub in subscriptions:
+        email_id = sub.get('email_id')
+        if email_id:
+            email_sub_count[email_id] = email_sub_count.get(email_id, 0) + 1
+
+    # 为每个邮箱添加平台标签和订阅数
+    all_emails = []
     for email in emails:
         email_dict = dict(email)
         email_dict['platforms'] = db.get_email_platforms(email_dict['id'])
-        result.append(email_dict)
-
-    return jsonify(result)
+        email_dict['subscription_count'] = email_sub_count.get(email_dict['id'], 0)
+        all_emails.append(email_dict)
+    
+    # 异常邮箱排在前面（有错误或订阅不足2个）
+    all_emails.sort(key=lambda x: (
+        -(1 if x.get('last_error') else 0) - (1 if x.get('subscription_count', 0) < 2 else 0)
+    ))
+    
+    # 搜索过滤（前缀匹配）
+    if search:
+        search_lower = search.lower()
+        all_emails = [e for e in all_emails if e['email'].lower().startswith(search_lower)]
+    
+    # 计算总数
+    total = len(all_emails)
+    
+    # 分页
+    start = (page - 1) * page_size
+    end = start + page_size
+    paged_emails = all_emails[start:end]
+    
+    return jsonify({
+        'emails': paged_emails,
+        'total': total,
+        'page': page,
+        'page_size': page_size,
+        'total_pages': (total + page_size - 1) // page_size
+    })
 
 @app.route('/api/emails/export', methods=['GET'])
 @token_required
 def export_emails(current_user):
     """导出邮箱列表为文本文件"""
     from flask import Response
+    from datetime import datetime
     
     # 获取用户的邮箱
     if current_user['is_admin']:
@@ -440,10 +479,13 @@ def export_emails(current_user):
     
     content = '\n'.join(lines)
     
+    # 生成文件名：邮箱备份_年月日_时分秒.txt
+    filename = f"邮箱备份_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    
     return Response(
         content,
         mimetype='text/plain',
-        headers={'Content-Disposition': 'attachment; filename=emails_export.txt'}
+        headers={'Content-Disposition': f'attachment; filename*=UTF-8\'\'{filename}'}
     )
 
 @app.route('/api/emails', methods=['POST'])
@@ -2096,6 +2138,43 @@ def get_graph_api_status(current_user):
         'subscription_count': subscription_count,
         'expected_subscription_count': expected_subscription_count,
         'expired_count': expired_count
+    })
+
+@app.route('/api/subscriptions/missing', methods=['GET'])
+@token_required
+@admin_required
+def get_missing_subscriptions(current_user):
+    """查找缺少订阅的邮箱"""
+    # 获取所有 Outlook 邮箱
+    outlook_emails = db.get_all_outlook_emails()
+    
+    # 获取所有订阅
+    subscriptions = db.get_all_subscriptions()
+    
+    # 统计每个邮箱的订阅数
+    email_sub_count = {}
+    for sub in subscriptions:
+        email_id = sub.get('email_id')
+        if email_id:
+            email_sub_count[email_id] = email_sub_count.get(email_id, 0) + 1
+    
+    # 找出订阅不完整的邮箱（应该有2个订阅：Inbox + JunkEmail）
+    missing = []
+    for email in outlook_emails:
+        email_id = email['id']
+        sub_count = email_sub_count.get(email_id, 0)
+        if sub_count < 2:
+            missing.append({
+                'id': email_id,
+                'email': email['email'],
+                'subscription_count': sub_count,
+                'missing': 2 - sub_count
+            })
+    
+    return jsonify({
+        'total_emails': len(outlook_emails),
+        'missing_count': len(missing),
+        'emails': missing
     })
 
 def parse_args():
