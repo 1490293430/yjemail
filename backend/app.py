@@ -480,12 +480,14 @@ def export_emails(current_user):
     content = '\n'.join(lines)
     
     # 生成文件名：邮箱备份_年月日_时分秒.txt
+    from urllib.parse import quote
     filename = f"邮箱备份_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    encoded_filename = quote(filename)
     
     return Response(
         content,
         mimetype='text/plain',
-        headers={'Content-Disposition': f'attachment; filename*=UTF-8\'\'{filename}'}
+        headers={'Content-Disposition': f"attachment; filename*=UTF-8''{encoded_filename}"}
     )
 
 @app.route('/api/emails', methods=['POST'])
