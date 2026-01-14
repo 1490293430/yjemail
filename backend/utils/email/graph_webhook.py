@@ -6,6 +6,7 @@ Microsoft Graph API Webhook 订阅管理模块
 import requests
 import threading
 import time
+import re
 from datetime import datetime, timedelta, timezone
 from .logger import logger
 from .graph_api import GraphAPIMailHandler
@@ -422,18 +423,25 @@ class GraphWebhookHandler:
             bool: 是否处理成功
         """
         try:
+            logger.info(f"开始处理Webhook通知，数据: {notification_data}")
             notifications = notification_data.get('value', [])
+            logger.info(f"收到 {len(notifications)} 个通知")
             
-            for notification in notifications:
+            if not notifications:
+                logger.warning("通知数据中没有value字段或value为空")
+                return False
+            
+            for i, notification in enumerate(notifications):
                 try:
+                    logger.info(f"处理第 {i+1}/{len(notifications)} 个通知")
                     self._process_single_notification(notification)
                 except Exception as e:
-                    logger.error(f"处理单个通知失败: {str(e)}")
+                    logger.error(f"处理单个通知失败: {str(e)}", exc_info=True)
             
             return True
             
         except Exception as e:
-            logger.error(f"处理通知异常: {str(e)}")
+            logger.error(f"处理通知异常: {str(e)}", exc_info=True)
             return False
     
     def _process_single_notification(self, notification):
@@ -442,11 +450,11 @@ class GraphWebhookHandler:
         client_state = notification.get('clientState', '')
         resource = notification.get('resource', '')
         
-        logger.info(f"收到通知: changeType={change_type}, clientState={client_state}")
+        logger.info(f"收到通知: changeType={change_type}, clientState={client_state}, resource={resource}")
         
         # 从 clientState 解析邮箱 ID（格式: email_123 或 email_123_JunkEmail）
         if not client_state.startswith('email_'):
-            logger.warning(f"无效的 clientState: {client_state}")
+            logger.warning(f"无效的 clientState: {client_state}, 跳过处理")
             return
         
         try:
@@ -467,6 +475,7 @@ class GraphWebhookHandler:
         
         # 只处理新邮件通知
         if change_type == 'created':
+            logger.info(f"处理新邮件通知: 邮箱ID={email_id}, 邮箱={email_info.get('email')}, 文件夹={folder}")
             # 防抖：如果该邮箱正在处理中，跳过
             with self._processing_lock:
                 if email_id in self._processing_emails:
@@ -479,6 +488,8 @@ class GraphWebhookHandler:
             finally:
                 with self._processing_lock:
                     self._processing_emails.discard(email_id)
+        else:
+            logger.debug(f"忽略非创建类型的通知: changeType={change_type}")
     
     def _fetch_new_mail(self, email_info, folder=None):
         """获取新邮件
@@ -512,9 +523,38 @@ class GraphWebhookHandler:
             else:
                 folders_to_check = [('inbox', 'INBOX'), ('junkemail', 'JUNK')]
             
+            # 使用邮箱的最后检查时间，如果没有则使用最近10分钟
+            # 这样可以确保获取到所有新邮件，即使有多封邮件也能全部获取
+            last_check_time = email_info.get('last_check_time')
+            if last_check_time:
+                try:
+                    # 解析最后检查时间
+                    if isinstance(last_check_time, str):
+                        # 处理多种时间格式
+                        if 'T' in last_check_time:
+                            since_time = datetime.fromisoformat(last_check_time.replace('Z', '+00:00'))
+                        else:
+                            since_time = datetime.strptime(last_check_time, "%Y-%m-%d %H:%M:%S")
+                            since_time = since_time.replace(tzinfo=timezone.utc)
+                    else:
+                        since_time = last_check_time
+                        if since_time.tzinfo is None:
+                            since_time = since_time.replace(tzinfo=timezone.utc)
+                    # 减去30秒，避免边界情况漏掉邮件
+                    since_time = since_time - timedelta(seconds=30)
+                    logger.info(f"使用最后检查时间: {since_time} (UTC)")
+                except Exception as e:
+                    logger.warning(f"解析最后检查时间失败: {e}，使用默认时间窗口")
+                    since_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+            else:
+                # 如果没有最后检查时间，获取最近10分钟内的邮件
+                since_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+                logger.info(f"没有最后检查时间，使用默认时间窗口: {since_time} (UTC)")
+            
             all_messages = []
             for folder_name, folder_label in folders_to_check:
-                messages = handler.get_messages(folder=folder_name, limit=5)
+                # 获取指定时间之后的邮件，限制最多20封以避免过多
+                messages = handler.get_messages(folder=folder_name, limit=20, since=since_time)
                 if messages:
                     for msg in messages:
                         msg['_folder'] = folder_label
