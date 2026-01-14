@@ -5,6 +5,7 @@ import threading
 import argparse
 import datetime
 import jwt
+import random
 from functools import wraps
 from flask import Flask, send_from_directory, jsonify, request, Response, make_response
 from flask_cors import CORS
@@ -1447,27 +1448,32 @@ def get_unregistered_emails(current_user, platform_name):
     
     # 筛选未注册该平台的邮箱
     platform_lower = platform_name.lower()
+    unregistered_emails = []
     
     for email in all_emails:
         platforms = db.get_email_platforms(email['id'])
         # 检查是否已注册该平台（不区分大小写）
         has_platform = any(p.lower() == platform_lower for p in platforms)
         if not has_platform:
-            # 计算剩余数量
-            remaining = sum(1 for e in all_emails if not any(
-                p.lower() == platform_lower for p in db.get_email_platforms(e['id'])
-            )) - 1
-            return jsonify({
-                'platform': platform_name,
-                'email': email['email'],
-                'remaining': remaining
-            })
+            unregistered_emails.append(email)
+    
+    # 如果没有未注册的邮箱，返回空结果
+    if not unregistered_emails:
+        return jsonify({
+            'platform': platform_name,
+            'email': None,
+            'remaining': 0,
+            'message': '没有未注册的邮箱了'
+        })
+    
+    # 随机选择一个未注册的邮箱
+    selected_email = random.choice(unregistered_emails)
+    remaining = len(unregistered_emails) - 1
     
     return jsonify({
         'platform': platform_name,
-        'email': None,
-        'remaining': 0,
-        'message': '没有未注册的邮箱了'
+        'email': selected_email['email'],
+        'remaining': remaining
     })
 
 @app.route('/api/platforms/<platform_name>/unregistered/all', methods=['GET'])
