@@ -1459,11 +1459,11 @@ def get_unregistered_emails(current_user, platform_name):
     
     # 如果没有未注册的邮箱，返回空结果
     if not unregistered_emails:
-    return jsonify({
-        'platform': platform_name,
-        'email': None,
-        'remaining': 0,
-        'message': '没有未注册的邮箱了'
+        return jsonify({
+            'platform': platform_name,
+            'email': None,
+            'remaining': 0,
+            'message': '没有未注册的邮箱了'
         })
     
     # 随机选择一个未注册的邮箱
