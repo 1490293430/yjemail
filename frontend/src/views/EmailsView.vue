@@ -110,11 +110,11 @@
                 :label="`${p.platform_name} (${p.count})`"
                 :value="p.platform_name"
               >
-                <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-                  <span>{{ p.platform_name }} ({{ p.count }})</span>
+                <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; padding-right: 8px;">
+                  <span style="flex: 1;">{{ p.platform_name }} ({{ p.count }})</span>
                   <el-icon 
                     @click.stop="handleDeletePlatform(p.platform_name)" 
-                    style="color: #f56c6c; cursor: pointer; font-size: 14px;"
+                    style="color: #f56c6c; cursor: pointer; font-size: 16px; margin-left: 8px; flex-shrink: 0;"
                     :title="`删除 ${p.platform_name} 平台标记`"
                   >
                     <Delete />
