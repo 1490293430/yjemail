@@ -109,7 +109,18 @@
                 :key="p.platform_name"
                 :label="`${p.platform_name} (${p.count})`"
                 :value="p.platform_name"
-              />
+              >
+                <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                  <span>{{ p.platform_name }} ({{ p.count }})</span>
+                  <el-icon 
+                    @click.stop="handleDeletePlatform(p.platform_name)" 
+                    style="color: #f56c6c; cursor: pointer; font-size: 14px;"
+                    :title="`删除 ${p.platform_name} 平台标记`"
+                  >
+                    <Delete />
+                  </el-icon>
+                </div>
+              </el-option>
             </el-select>
             <el-radio-group v-model="filterPlatformMode" size="small" @change="handlePlatformFilterChange" :disabled="!filterPlatform">
               <el-radio-button label="has">已注册</el-radio-button>
@@ -1933,9 +1944,78 @@ const loadAllPlatforms = async () => {
 }
 
 // 平台筛选变化
-const handlePlatformFilterChange = () => {
+const handlePlatformFilterChange = async () => {
   // 清空选中状态
   emailsStore.selectedEmails = []
+  
+  // 如果选择了平台筛选，获取所有邮箱数据（不分页）
+  if (filterPlatform.value) {
+    await emailsStore.fetchEmails({
+      page: 1,
+      pageSize: 99999,  // 获取所有数据
+      search: emailSearchFilter.value
+    })
+  } else {
+    // 取消平台筛选时，恢复分页
+    currentPage.value = 1
+    await emailsStore.fetchEmails({
+      page: 1,
+      pageSize: currentPageSize.value,
+      search: emailSearchFilter.value
+    })
+  }
+}
+
+// 删除平台标记
+const handleDeletePlatform = async (platformName) => {
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除所有邮箱的 "${platformName}" 平台标记吗？此操作不可恢复！`,
+      '警告',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    
+    const loading = ElLoading.service({ text: `正在删除 ${platformName} 平台标记...` })
+    
+    try {
+      const response = await fetch(`/api/platforms/${encodeURIComponent(platformName)}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        ElMessage.success(data.message || '删除成功')
+        
+        // 清空平台筛选
+        filterPlatform.value = ''
+        
+        // 刷新邮箱列表和平台列表
+        await emailsStore.fetchEmails({
+          page: currentPage.value,
+          pageSize: currentPageSize.value,
+          search: emailSearchFilter.value
+        })
+        await loadAllPlatforms()
+      } else {
+        const data = await response.json()
+        ElMessage.error(data.error || '删除失败')
+      }
+    } finally {
+      loading.close()
+    }
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('删除平台标记失败:', error)
+      ElMessage.error('删除失败: ' + (error.message || '网络错误'))
+    }
+  }
 }
 
 // 平台名称自动补全

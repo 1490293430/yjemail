@@ -1460,6 +1460,31 @@ def remove_email_platform(current_user, email_id, platform_name):
         return jsonify({'message': '移除成功'})
     return jsonify({'error': '移除失败'}), 500
 
+@app.route('/api/platforms/<platform_name>', methods=['DELETE'])
+@token_required
+def delete_platform(current_user, platform_name):
+    """删除某个平台的所有标记"""
+    try:
+        # 获取该平台关联的所有邮箱
+        if current_user['is_admin']:
+            all_emails = db.get_all_emails()
+        else:
+            all_emails = db.get_all_emails(current_user['id'])
+        
+        count = 0
+        platform_lower = platform_name.lower()
+        for email in all_emails:
+            platforms = db.get_email_platforms(email['id'])
+            for p in platforms:
+                if p.lower() == platform_lower:
+                    if db.remove_email_platform(email['id'], p):
+                        count += 1
+                    break
+        
+        return jsonify({'message': f'已删除 {count} 个邮箱的 {platform_name} 标记', 'count': count})
+    except Exception as e:
+        return jsonify({'error': f'删除失败: {str(e)}'}), 500
+
 @app.route('/api/platforms', methods=['GET'])
 @token_required
 def get_all_platforms(current_user):
