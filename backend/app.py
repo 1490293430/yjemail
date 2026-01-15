@@ -491,6 +491,46 @@ def export_emails(current_user):
         headers={'Content-Disposition': f"attachment; filename*=UTF-8''{encoded_filename}"}
     )
 
+@app.route('/api/emails/export/error', methods=['GET'])
+@token_required
+def export_error_emails(current_user):
+    """导出异常邮箱列表为文本文件"""
+    from flask import Response
+    from datetime import datetime
+    
+    # 获取用户的邮箱
+    if current_user['is_admin']:
+        emails = db.get_all_emails()
+    else:
+        emails = db.get_all_emails(current_user['id'])
+    
+    # 筛选异常邮箱
+    error_emails = [e for e in emails if e.get('last_error')]
+    
+    # 按导入格式生成内容：邮箱地址----密码----客户端ID----刷新令牌
+    lines = []
+    for email in error_emails:
+        mail_type = email.get('mail_type', 'outlook')
+        if mail_type == 'outlook':
+            line = f"{email['email']}----{email.get('password', '')}----{email.get('client_id', '')}----{email.get('refresh_token', '')}"
+        else:
+            # 非 Outlook 邮箱只导出邮箱和密码
+            line = f"{email['email']}----{email.get('password', '')}----{mail_type}"
+        lines.append(line)
+    
+    content = '\n'.join(lines)
+    
+    # 生成文件名：异常邮箱备份_年月日_时分秒.txt
+    from urllib.parse import quote
+    filename = f"异常邮箱备份_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    encoded_filename = quote(filename)
+    
+    return Response(
+        content,
+        mimetype='text/plain',
+        headers={'Content-Disposition': f"attachment; filename*=UTF-8''{encoded_filename}"}
+    )
+
 @app.route('/api/emails', methods=['POST'])
 @token_required
 def add_email(current_user):
