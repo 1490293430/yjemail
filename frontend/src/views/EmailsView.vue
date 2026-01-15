@@ -32,6 +32,9 @@
               <el-button type="warning" size="small" @click="exportAllEmails" :icon="Download" style="margin-left: 12px;">
                 导出全部邮箱
               </el-button>
+              <el-button type="danger" size="small" @click="exportErrorEmails" :icon="Download" style="margin-left: 12px;" v-if="errorEmailCount > 0">
+                导出异常邮箱 ({{ errorEmailCount }})
+              </el-button>
             </div>
             <div class="actions flex gap-md">
               <el-button type="primary" @click="refreshEmails" :icon="Refresh" class="hover-scale">
@@ -1503,6 +1506,28 @@ const exportAllEmails = async () => {
     console.error('导出邮箱失败:', error)
     ElMessage.error('导出失败: ' + (error.message || '网络错误'))
   }
+}
+
+// 导出异常邮箱
+const exportErrorEmails = () => {
+  const errorEmails = emails.value.filter(e => e.last_error)
+  if (errorEmails.length === 0) {
+    ElMessage.info('没有异常邮箱')
+    return
+  }
+  
+  const content = errorEmails.map(e => e.email).join('\n')
+  const blob = new Blob([content], { type: 'text/plain' })
+  const url = window.URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `emails_error_${new Date().toISOString().slice(0, 10)}.txt`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  window.URL.revokeObjectURL(url)
+  
+  ElMessage.success(`已导出 ${errorEmails.length} 个异常邮箱`)
 }
 
 // 导出筛选后的邮箱（只导出邮箱地址，每行一个）
