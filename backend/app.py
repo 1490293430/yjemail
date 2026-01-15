@@ -1451,6 +1451,9 @@ def get_unregistered_emails(current_user, platform_name):
     unregistered_emails = []
     
     for email in all_emails:
+        # 跳过异常邮箱
+        if email.get('last_error'):
+            continue
         platforms = db.get_email_platforms(email['id'])
         # 检查是否已注册该平台（不区分大小写）
         has_platform = any(p.lower() == platform_lower for p in platforms)
@@ -1500,6 +1503,9 @@ def get_all_unregistered_emails(current_user, platform_name):
     platform_lower = platform_name.lower()
     
     for email in all_emails:
+        # 跳过异常邮箱
+        if email.get('last_error'):
+            continue
         platforms = db.get_email_platforms(email['id'])
         # 检查是否未注册该平台（不区分大小写）
         has_platform = any(p.lower() == platform_lower for p in platforms)
